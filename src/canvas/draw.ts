@@ -1,16 +1,56 @@
 /**
  * Pure Canvas-2D drawing of BZRD objects in LOCAL METER coordinates.
  * Used by the Konva scene (Shape.sceneFunc), library previews and export.
+ *
+ * V2 draws the board in PASSES by category (rank), not in a single z-order:
+ *   0 nawierzchnie (asfalt / chodnik / trawnik / krawężnik)   drawSurface
+ *   1 pasy (powierzchnia pasów + zaokrąglone styki)             drawSurface
+ *   2 tło przejść (czerwona nawierzchnia P-11, …)               drawSurface
+ *   3 torowiska (podsypka, podkłady, płyty przejazdu na jezdni) drawTramBand
+ *   4 oznakowanie (linie, strzałki, napisy, zebra, szrafura)    drawMarkings
+ *   5 szyny                                                      drawRails
+ *   6 symbole (pojazdy, ludzie, znaki pionowe, zieleń)          Konva <Image>
  */
-import type { BzObject, Divider, Lane, LineObj, RoadSpec, StripObj, TextObj, Vec2 } from '../model/types';
-import { CONCRETE, CONCRETE_DARK, GRASS, WHITE, ASPHALT, dashFor, laneFill, lineColor, mergeLanes, strokeFor, LINE_W, DOUBLE_GAP, autoDividers } from './roadGeometry';
+import type { BzObject, Lane, LaneMarking, LineObj, LineSpec, RoadSpec, StripObj, TextObj, Vec2 } from '../model/types';
+import { ASPHALT, CONCRETE, CURB, CURB_KINDS, GRASS, RAIL, ROADWAY_KINDS, SLEEPER, TRAM_SLAB, WHITE, laneFill, mergeLanes, autoDividers, specWidth } from './roadGeometry';
 import { bandPolygon, flatten, offsetPolyline, polygonBounds, sampleAt, type Flat } from './path';
 import { drawPictogram, type PictoId } from './pictograms';
+import { laneMarkingOf } from '../catalog/helpers';
+import { symbolById } from '../assets/symbols';
 
 type Ctx = CanvasRenderingContext2D;
 
-export const CURB = '#8f8b84';
-const CURB_KINDS: Lane['kind'][] = ['sidewalk', 'median', 'separator', 'green', 'path', 'bikePath'];
+// ───────────────────────── categories ─────────────────────────
+
+export type Rank = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+export const RANK_LABEL: Record<Rank, string> = { 0: 'Nawierzchnie', 1: 'Pasy', 2: 'Przejścia', 3: 'Torowiska', 4: 'Oznakowanie', 5: 'Szyny', 6: 'Symbole' };
+
+export function isTramStrip(o: StripObj): boolean {
+  return o.spec.lanes.some((l) => l.kind === 'tram') || !!o.spec.lanesEnd?.some((l) => l.kind === 'tram');
+}
+
+/** Category of an object — decides what is drawn above what (creation order only matters within a category). */
+export function objectRank(o: BzObject): Rank {
+  switch (o.type) {
+    case 'strip': return isTramStrip(o) ? 3 : 1;
+    case 'line':
+      switch (o.variant) {
+        case 'asphalt': case 'pavement': case 'grass': case 'curb': return 0;
+        case 'crosswalk': case 'bikeCrossing': return 2;
+        default: return 4;
+      }
+    case 'text': return 4;
+    case 'symbol': {
+      const def = symbolById(o.symbolId);
+      return def && (def.category === 'arrows' || def.category === 'markings' || def.category === 'words') ? 4 : 6;
+    }
+  }
+}
+
+/** Stable sort by rank (bottom first). */
+export function sortByRank<T extends BzObject>(objs: T[]): T[] {
+  return objs.map((o, i) => ({ o, i, r: objectRank(o) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.o);
+}
 
 // ───────────────────────── text & glyphs ─────────────────────────
 
@@ -26,7 +66,7 @@ export function drawTextM(ctx: Ctx, text: string, x: number, y: number, heightM:
   ctx.textBaseline = 'middle';
   if (opts.maxWidth) {
     const wM = ctx.measureText(text).width / k;
-    if (wM > opts.maxWidth) ctx.scale(opts.maxWidth / wM, 1); // squeeze to fit the lane
+    if (wM > opts.maxWidth) ctx.scale(opts.maxWidth / wM, 1);
   }
   ctx.fillText(text, 0, 0);
   ctx.restore();
@@ -43,21 +83,20 @@ export function drawBikeGlyph(ctx: Ctx, x: number, y: number, h = 1.4, color = W
   ctx.lineWidth = 0.1;
   ctx.lineCap = 'round';
   const r = 0.36;
-  const wy = 0.12; // wheel centre y (glyph centred on its bounding box)
+  const wy = 0.12;
   ctx.beginPath(); ctx.arc(-0.55, wy, r, 0, Math.PI * 2); ctx.stroke();
   ctx.beginPath(); ctx.arc(0.55, wy, r, 0, Math.PI * 2); ctx.stroke();
   ctx.lineWidth = 0.09;
   ctx.beginPath();
-  ctx.moveTo(-0.55, wy); ctx.lineTo(-0.15, -0.25); ctx.lineTo(0.35, -0.25); ctx.lineTo(0.55, wy); // top tube + down to rear
-  ctx.moveTo(-0.15, -0.25); ctx.lineTo(0.05, wy); ctx.lineTo(-0.55, wy);                     // seat tube + chainstay
-  ctx.moveTo(0.35, -0.25); ctx.lineTo(0.25, -0.5); ctx.lineTo(0.5, -0.55);                   // stem + handlebar
-  ctx.moveTo(-0.15, -0.25); ctx.lineTo(-0.25, -0.5); ctx.lineTo(-0.1, -0.52);                // seat post + saddle
+  ctx.moveTo(-0.55, wy); ctx.lineTo(-0.15, -0.25); ctx.lineTo(0.35, -0.25); ctx.lineTo(0.55, wy);
+  ctx.moveTo(-0.15, -0.25); ctx.lineTo(0.05, wy); ctx.lineTo(-0.55, wy);
+  ctx.moveTo(0.35, -0.25); ctx.lineTo(0.25, -0.5); ctx.lineTo(0.5, -0.55);
+  ctx.moveTo(-0.15, -0.25); ctx.lineTo(-0.25, -0.5); ctx.lineTo(-0.1, -0.52);
   ctx.stroke();
   ctx.restore();
 }
 
-/** P-8 style arrow pointing +x. */
-// ───────────────────────── strip (lanes along a path) ─────────────────────────
+// ───────────────────────── strip layout ─────────────────────────
 
 interface LaneBand {
   lane: Lane;
@@ -69,7 +108,7 @@ interface LaneBand {
 export interface StripLayout {
   flat: Flat;
   bands: LaneBand[];
-  dividers: Array<{ divider: Divider; at: (s: number) => number }>;
+  dividers: Array<{ divider: LineSpec; at: (s: number) => number }>;
   top: (s: number) => number;
   bot: (s: number) => number;
   spec: RoadSpec;
@@ -85,7 +124,6 @@ export function stripLayout(obj: StripObj, step = 0.5): StripLayout {
   const off = obj.spec.offset ?? 0;
   const top0 = -W0 / 2 + off;
   const top1 = obj.spec.offsetEnd !== undefined ? -W1 / 2 + obj.spec.offsetEnd : anchor === 'left' ? top0 : anchor === 'right' ? top0 + W0 - W1 : -W1 / 2 + off;
-  // width changes (klin) follow a smooth S-curve: tangent to the lane at the start and to the neighbour at the end
   const ease = obj.spec.lanesEnd ? (t: number) => t * t * (3 - 2 * t) : (t: number) => t;
   const lerp = (a: number, b: number) => (s: number) => a + (b - a) * ease(Math.min(1, Math.max(0, s / L)));
   const bands: LaneBand[] = [];
@@ -106,19 +144,25 @@ export function stripOutline(obj: StripObj): Vec2[] {
   return bandPolygon(lay.flat, lay.top, lay.bot);
 }
 
-function fillPoly(ctx: Ctx, poly: Vec2[], color: string) {
-  if (poly.length < 3) return;
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  // hide anti-aliasing seams between adjacent bands / joined strips: ~1 screen pixel, at least 4 cm
-  const m = ctx.getTransform();
-  const pxPerUnit = Math.hypot(m.a, m.b) || 1;
-  ctx.lineWidth = Math.max(0.04, 1.2 / pxPerUnit);
-  ctx.lineJoin = 'round';
+// ───────────────────────── primitives ─────────────────────────
+
+function pathPoly(ctx: Ctx, poly: Vec2[]) {
   ctx.beginPath();
   ctx.moveTo(poly[0].x, poly[0].y);
   for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
   ctx.closePath();
+}
+
+function fillPoly(ctx: Ctx, poly: Vec2[], color: string) {
+  if (poly.length < 3) return;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  // hide anti-aliasing seams between adjacent bands / touching strips: ~1 screen pixel, at least 4 cm
+  const m = ctx.getTransform();
+  const pxPerUnit = Math.hypot(m.a, m.b) || 1;
+  ctx.lineWidth = Math.max(0.04, 1.2 / pxPerUnit);
+  ctx.lineJoin = 'round';
+  pathPoly(ctx, poly);
   ctx.fill();
   ctx.stroke();
 }
@@ -138,91 +182,277 @@ function strokePoly(ctx: Ctx, pts: Vec2[], closed: boolean, color: string, width
   ctx.setLineDash([]);
 }
 
-function strokeDividerAlong(ctx: Ctx, flat: Flat, d: Divider, at: (s: number) => number) {
-  if (d.style === 'none') return;
-  const color = lineColor(d.color);
-  const w = strokeFor(d.style);
-  const dash = dashFor(d.style);
-  const off = LINE_W / 2 + DOUBLE_GAP / 2;
+/** P-13: triangles (base 0.5 m along the line, height = spec.width) every 0.75 m, apex toward the path's left. */
+function strokeTriangles(ctx: Ctx, flat: Flat, at: (s: number) => number, spec: LineSpec) {
+  ctx.fillStyle = spec.color;
+  const h = spec.width || 0.7;
+  for (let s = 0.25; s + 0.5 <= flat.length + 0.01; s += 0.75) {
+    const a = sampleAt(flat, s), b = sampleAt(flat, s + 0.5), m = sampleAt(flat, s + 0.25);
+    const oa = at(a.s), ob = at(b.s), om = at(m.s);
+    ctx.beginPath();
+    ctx.moveTo(a.x - a.nx * oa, a.y - a.ny * oa);
+    ctx.lineTo(b.x - b.nx * ob, b.y - b.ny * ob);
+    ctx.lineTo(m.x - m.nx * (om - h), m.y - m.ny * (om - h));
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+/** Paint a line spec along `flat`, laterally offset by `at(s)` (lane coords, +right). */
+export function strokeLineSpec(ctx: Ctx, flat: Flat, spec: LineSpec, at: (s: number) => number) {
+  if (spec.style === 'none' || spec.width <= 0) return;
   const closed = flat.closed;
-  switch (d.style) {
+  const w = spec.width;
+  const dash = spec.dash ?? [2, 4];
+  const off = (w + 0.12) / 2; // double lines: 0.12 m gap between them
+  switch (spec.style) {
+    case 'solid':
+      strokePoly(ctx, offsetPolyline(flat, at), closed, spec.color, w);
+      break;
+    case 'dashed':
+      strokePoly(ctx, offsetPolyline(flat, at), closed, spec.color, w, dash);
+      break;
+    case 'blocks':
+      strokePoly(ctx, offsetPolyline(flat, at), closed, spec.color, w, spec.dash ?? [0.75, 0.25]);
+      break;
+    case 'triangles':
+      strokeTriangles(ctx, flat, at, spec);
+      break;
     case 'double':
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, color, w);
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, color, w);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, spec.color, w);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, spec.color, w);
       break;
     case 'doubleDashedLeft':
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, color, w, dashFor('dashed'));
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, color, w);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, spec.color, w, dash);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, spec.color, w);
       break;
     case 'doubleDashedRight':
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, color, w);
-      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, color, w, dashFor('dashed'));
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, spec.color, w);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, spec.color, w, dash);
       break;
-    default:
-      strokePoly(ctx, offsetPolyline(flat, at), closed, color, w, dash);
+    case 'doubleDashed':
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) - off), closed, spec.color, w, dash);
+      strokePoly(ctx, offsetPolyline(flat, (s) => at(s) + off), closed, spec.color, w, dash);
+      break;
   }
 }
 
-function defaultMarking(lane: Lane): NonNullable<Lane['marking']> {
-  switch (lane.kind) {
-    case 'bike': case 'bikePath': return 'bikeSymbols';
-    case 'bus': return 'busText';
-    case 'tram': return 'tramTracks';
-    case 'parking': case 'parkingPerp': case 'parkingAngle': return 'parkingBays';
-    case 'buffer': return 'hatch';
-    default: return 'none';
-  }
-}
+// ───────────────────────── joints between strips (round caps) ─────────────────────────
 
-/** Iterate positions along the band center at a spacing; cb gets world pos + heading (rad, in travel direction). */
-function alongBand(lay: StripLayout, band: LaneBand, start: number, spacing: number, cb: (x: number, y: number, heading: number, s: number) => void) {
+export interface Cap { x: number; y: number; r: number }
+
+interface StripEnd { id: string; x: number; y: number; r: number; rank: Rank }
+
+function stripEnds(o: StripObj): StripEnd[] {
+  if (o.path.closed || o.path.nodes.length < 2) return [];
+  const lay = stripLayout(o, 1);
   const L = lay.flat.length;
-  const nominal = Math.max(band.w0, band.w1);
-  for (let s = start; s <= L - start * 0.5 && s <= L; s += spacing) {
-    if (band.bot(s) - band.top(s) < nominal * 0.7) continue;
+  const rank = objectRank(o);
+  const out: StripEnd[] = [];
+  for (const s of [0, L]) {
     const smp = sampleAt(lay.flat, s);
-    const c = (band.top(s) + band.bot(s)) / 2;
-    const x = smp.x - smp.nx * c, y = smp.y - smp.ny * c;
-    let heading = Math.atan2(smp.ty, smp.tx);
-    if (band.lane.dir === -1) heading += Math.PI;
-    cb(x, y, heading, s);
-    if (spacing <= 0) break;
+    const t = lay.top(s), b = lay.bot(s);
+    const c = (t + b) / 2;
+    const r = (b - t) / 2;
+    if (r < 0.05) continue;
+    out.push({ id: o.id, x: o.x + smp.x - smp.nx * c, y: o.y + smp.y - smp.ny * c, r, rank });
+  }
+  return out;
+}
+
+/**
+ * Where two strip ends meet (within 0.35 m) a disc of the lane width is drawn under the joint, so a joint at an
+ * angle does not leave a wedge of missing asphalt on the outer side. Returned per object, in OBJECT-LOCAL coords.
+ */
+export function computeCaps(objects: BzObject[]): Map<string, Cap[]> {
+  const ends: StripEnd[] = [];
+  const byId = new Map<string, StripObj>();
+  for (const o of objects) if (o.type === 'strip' && o.visible !== false) { byId.set(o.id, o); ends.push(...stripEnds(o)); }
+  const caps = new Map<string, Cap[]>();
+  const add = (id: string, x: number, y: number, r: number) => {
+    const o = byId.get(id)!;
+    const arr = caps.get(id) ?? [];
+    arr.push({ x: x - o.x, y: y - o.y, r });
+    caps.set(id, arr);
+  };
+  for (let i = 0; i < ends.length; i++) {
+    for (let j = i + 1; j < ends.length; j++) {
+      const a = ends[i], b = ends[j];
+      if (a.id === b.id || a.rank !== b.rank) continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 0.35) continue;
+      const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2, r = Math.max(a.r, b.r);
+      add(a.id, x, y, r);
+      add(b.id, x, y, r);
+    }
+  }
+  return caps;
+}
+
+function fillCaps(ctx: Ctx, caps: Cap[] | undefined, color: string) {
+  if (!caps?.length) return;
+  ctx.fillStyle = color;
+  for (const c of caps) { ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill(); }
+}
+
+// ───────────────────────── strips: surface pass ─────────────────────────
+
+function drawStripSurface(ctx: Ctx, obj: StripObj, caps?: Cap[]) {
+  if (obj.path.nodes.length < 2) return;
+  const lay = stripLayout(obj);
+  const flat = lay.flat;
+  for (const b of lay.bands) fillPoly(ctx, bandPolygon(flat, b.top, b.bot), laneFill(b.lane));
+  fillCaps(ctx, caps, laneFill(lay.bands[lay.bands.length - 1]?.lane ?? obj.spec.lanes[0]));
+  for (const b of lay.bands) {
+    if (CURB_KINDS.includes(b.lane.kind)) {
+      strokePoly(ctx, offsetPolyline(flat, b.top), flat.closed, CURB, 0.1);
+      strokePoly(ctx, offsetPolyline(flat, b.bot), flat.closed, CURB, 0.1);
+    }
   }
 }
 
-function drawBandDetails(ctx: Ctx, lay: StripLayout, band: LaneBand, noGlyphs: boolean) {
-  const lane = band.lane;
-  const marking = lane.marking ?? defaultMarking(lane);
-  const nominal = Math.max(band.w0, band.w1);
-  const flat = lay.flat;
-  if (marking === 'tramTracks') {
-    const gauge = 1.435;
-    for (const off of [-gauge / 2, gauge / 2]) {
-      strokePoly(ctx, offsetPolyline(flat, (s) => (band.top(s) + band.bot(s)) / 2 + off), flat.closed, '#b7bcc2', 0.09);
-    }
-    // sleepers
-    if (!noGlyphs) {
-      ctx.strokeStyle = '#6a6e73'; ctx.lineWidth = 0.12;
-      for (let s = 0.4; s < flat.length; s += 0.7) {
-        const smp = sampleAt(flat, s);
-        const c = (band.top(s) + band.bot(s)) / 2;
-        ctx.beginPath();
-        ctx.moveTo(smp.x - smp.nx * (c - 1.0), smp.y - smp.ny * (c - 1.0));
-        ctx.lineTo(smp.x - smp.nx * (c + 1.0), smp.y - smp.ny * (c + 1.0));
-        ctx.stroke();
+// ───────────────────────── strips: tram passes ─────────────────────────
+
+const GAUGE = 1.435;
+
+/** World polygons of everything a tram should cross on slabs: carriageway strips, asphalt areas, P-10 / P-11. */
+export function roadwayPolygons(objects: BzObject[]): Vec2[][] {
+  const out: Vec2[][] = [];
+  for (const o of objects) {
+    if (o.visible === false) continue;
+    if (o.type === 'strip') {
+      if (o.path.nodes.length < 2 || isTramStrip(o)) continue;
+      if (!o.spec.lanes.some((l) => ROADWAY_KINDS.includes(l.kind))) continue;
+      out.push(stripOutline(o).map((p) => ({ x: p.x + o.x, y: p.y + o.y })));
+    } else if (o.type === 'line') {
+      if (o.path.nodes.length < 2) continue;
+      if (o.variant === 'asphalt' && o.path.closed) out.push(flatten(o.path, 0.5).pts.map((p) => ({ x: p.x + o.x, y: p.y + o.y })));
+      else if (o.variant === 'crosswalk' || o.variant === 'bikeCrossing') {
+        const f = flatten(o.path, 0.4);
+        out.push(bandPolygon(f, () => -o.width / 2, () => o.width / 2).map((p) => ({ x: p.x + o.x, y: p.y + o.y })));
       }
-      for (const off of [-gauge / 2, gauge / 2]) strokePoly(ctx, offsetPolyline(flat, (s) => (band.top(s) + band.bot(s)) / 2 + off), flat.closed, '#c9ced4', 0.09);
     }
-    return;
   }
-  if (marking === 'parkingBays') {
+  return out;
+}
+
+function tramBands(lay: StripLayout): LaneBand[] {
+  return lay.bands.filter((b) => b.lane.kind === 'tram' && b.w0 + b.w1 > 0.1);
+}
+
+/**
+ * Rank 3: the tram band itself (ballast / grass, sleepers), then — wherever it overlaps a carriageway or a crossing —
+ * light slabs (przejazd tramwajowy) on top of the sleepers. `roadPolys` are WORLD polygons; the ctx is object-local.
+ */
+export function drawTramBand(ctx: Ctx, obj: StripObj, roadPolys: Vec2[][], caps?: Cap[]) {
+  if (obj.path.nodes.length < 2) return;
+  const lay = stripLayout(obj);
+  const flat = lay.flat;
+  for (const b of lay.bands) fillPoly(ctx, bandPolygon(flat, b.top, b.bot), laneFill(b.lane));
+  fillCaps(ctx, caps, laneFill(lay.bands[0].lane));
+  // sleepers
+  ctx.strokeStyle = SLEEPER; ctx.lineWidth = 0.14; ctx.lineCap = 'butt';
+  for (const b of tramBands(lay)) {
+    const half = Math.min(1.1, Math.max(b.w0, b.w1) / 2 - 0.1);
+    ctx.beginPath();
+    for (let s = 0.35; s < flat.length; s += 0.7) {
+      const smp = sampleAt(flat, s);
+      const c = (b.top(s) + b.bot(s)) / 2;
+      ctx.moveTo(smp.x - smp.nx * (c - half), smp.y - smp.ny * (c - half));
+      ctx.lineTo(smp.x - smp.nx * (c + half), smp.y - smp.ny * (c + half));
+    }
+    ctx.stroke();
+  }
+  // slabs where the track crosses a roadway / crossing
+  if (roadPolys.length) {
+    const band = bandPolygon(flat, lay.top, lay.bot);
+    ctx.save();
+    ctx.translate(-obj.x, -obj.y);
+    const world = band.map((p) => ({ x: p.x + obj.x, y: p.y + obj.y }));
+    for (const poly of roadPolys) {
+      if (poly.length < 3) continue;
+      ctx.save();
+      pathPoly(ctx, poly);
+      ctx.clip();
+      fillPoly(ctx, world, TRAM_SLAB);
+      // slab seams every 3 m
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 0.04;
+      ctx.beginPath();
+      for (let s = 3; s < flat.length; s += 3) {
+        const smp = sampleAt(flat, s);
+        const t = lay.top(s), b = lay.bot(s);
+        ctx.moveTo(obj.x + smp.x - smp.nx * t, obj.y + smp.y - smp.ny * t);
+        ctx.lineTo(obj.x + smp.x - smp.nx * b, obj.y + smp.y - smp.ny * b);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+/** Rank 5: rails (always on top of paint). */
+export function drawRails(ctx: Ctx, obj: StripObj) {
+  if (obj.path.nodes.length < 2) return;
+  const lay = stripLayout(obj);
+  const flat = lay.flat;
+  for (const b of tramBands(lay)) {
+    for (const off of [-GAUGE / 2, GAUGE / 2]) {
+      const pl = offsetPolyline(flat, (s) => (b.top(s) + b.bot(s)) / 2 + off);
+      strokePoly(ctx, pl, flat.closed, '#2f3236', 0.14);
+      strokePoly(ctx, pl, flat.closed, RAIL, 0.07);
+    }
+  }
+}
+
+// ───────────────────────── strips: marking pass ─────────────────────────
+
+const ARROW: Partial<Record<LaneMarking, PictoId>> = {
+  p8a: 'p8a', p8b: 'p8b', p8c: 'p8c', p8d: 'p8d', p8e: 'p8e', p8f: 'p8f', p8g: 'p8g', p8h: 'p8h', p8i: 'p8i', p9a: 'p9a', p9b: 'p9b',
+};
+
+/** Centre positions (arc length) of repeated glyphs, counted from the exit end of the lane. */
+function glyphPositions(lane: Lane, L: number, glyphLen: number, defaultGap: number): number[] {
+  const gap = lane.markGap ?? defaultGap;
+  const count = lane.markCount ?? 3;
+  const margin = glyphLen / 2 + 1.0;
+  const out: number[] = [];
+  if (L < glyphLen + 1) return out;
+  const exitEnd = lane.dir !== -1;
+  for (let k = 0; count === 0 || k < count; k++) {
+    const s = exitEnd ? L - margin - k * gap : margin + k * gap;
+    if (s < glyphLen / 2 || s > L - glyphLen / 2) break;
+    out.push(s);
+    if (gap <= 0) break;
+  }
+  return out;
+}
+
+function glyphFrame(lay: StripLayout, band: LaneBand, s: number): { x: number; y: number; heading: number; width: number } | null {
+  const nominal = Math.max(band.w0, band.w1);
+  const width = band.bot(s) - band.top(s);
+  if (width < nominal * 0.7) return null;
+  const smp = sampleAt(lay.flat, s);
+  const c = (band.top(s) + band.bot(s)) / 2;
+  let heading = Math.atan2(smp.ty, smp.tx);
+  if (band.lane.dir === -1) heading += Math.PI;
+  return { x: smp.x - smp.nx * c, y: smp.y - smp.ny * c, heading, width };
+}
+
+function drawBandMarking(ctx: Ctx, lay: StripLayout, band: LaneBand) {
+  const lane = band.lane;
+  const marking = laneMarkingOf(lane);
+  if (marking === 'none' || marking === 'tracks') return;
+  const flat = lay.flat;
+  const L = flat.length;
+  const nominal = Math.max(band.w0, band.w1);
+
+  if (marking === 'p18') {
     const step = lane.kind === 'parkingPerp' ? 2.5 : lane.kind === 'parkingAngle' ? 2.5 / Math.SQRT1_2 : 6;
-    ctx.strokeStyle = WHITE; ctx.lineWidth = LINE_W;
-    // P-19 edge line toward the traffic lane is drawn by dividers; bays:
-    for (let s = step; s < flat.length - 0.5; s += step) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 0.12; ctx.lineCap = 'butt';
+    for (let s = step; s < L - 0.5; s += step) {
       const smp = sampleAt(flat, s);
       const t = band.top(s), b = band.bot(s);
-      const inset = lane.kind === 'parking' ? 0.25 : 0;
+      const inset = lane.kind === 'parking' ? 0.25 : 0.06;
       ctx.beginPath();
       if (lane.kind === 'parkingAngle') {
         const back = sampleAt(flat, Math.max(0, s - nominal));
@@ -231,146 +461,153 @@ function drawBandDetails(ctx: Ctx, lay: StripLayout, band: LaneBand, noGlyphs: b
       } else {
         ctx.moveTo(smp.x - smp.nx * (t + inset), smp.y - smp.ny * (t + inset));
         ctx.lineTo(smp.x - smp.nx * (b - inset), smp.y - smp.ny * (b - inset));
+        // T-caps 0.6 m at both ends of the divider (P-18)
+        for (const e of [t + inset, b - inset]) {
+          ctx.moveTo(smp.x - smp.nx * e + smp.tx * 0.3, smp.y - smp.ny * e + smp.ty * 0.3);
+          ctx.lineTo(smp.x - smp.nx * e - smp.tx * 0.3, smp.y - smp.ny * e - smp.ty * 0.3);
+        }
       }
       ctx.stroke();
     }
     return;
   }
-  if (marking === 'hatch') {
+
+  if (marking === 'p21') {
+    // P-21a: obwiednia P-7b 0,24 m; liniowanie 0,24 m co 0,39 m, skos 1:3 do linii obwodowej
     const poly = bandPolygon(flat, band.top, band.bot);
+    if (poly.length < 3) return;
     ctx.save();
-    ctx.beginPath(); ctx.moveTo(poly[0].x, poly[0].y); for (const p of poly) ctx.lineTo(p.x, p.y); ctx.closePath(); ctx.clip();
-    ctx.strokeStyle = WHITE; ctx.lineWidth = LINE_W;
-    for (let s = 0; s < flat.length + nominal; s += 1.0) {
-      const a = sampleAt(flat, Math.max(0, s - nominal)), b = sampleAt(flat, Math.min(flat.length, s));
-      ctx.beginPath();
-      ctx.moveTo(a.x - a.nx * band.top(a.s), a.y - a.ny * band.top(a.s));
-      ctx.lineTo(b.x - b.nx * band.bot(b.s), b.y - b.ny * band.bot(b.s));
-      ctx.stroke();
+    pathPoly(ctx, poly); ctx.clip();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 0.24; ctx.lineCap = 'butt';
+    const run = 3 * nominal;
+    const pitch = 0.63 * Math.sqrt(1 + 9); // perpendicular pitch 0.63 m projected on the axis
+    ctx.beginPath();
+    for (let s = -run; s < L + run; s += pitch) {
+      const a = sampleAt(flat, Math.max(0, Math.min(L, s))), b = sampleAt(flat, Math.max(0, Math.min(L, s + run)));
+      const ax = a.x + a.tx * (s - a.s), ay = a.y + a.ty * (s - a.s);
+      const bx = b.x + b.tx * (s + run - b.s), by = b.y + b.ty * (s + run - b.s);
+      ctx.moveTo(ax - a.nx * band.top(a.s), ay - a.ny * band.top(a.s));
+      ctx.lineTo(bx - b.nx * band.bot(b.s), by - b.ny * band.bot(b.s));
     }
+    ctx.stroke();
     ctx.restore();
-    strokePoly(ctx, offsetPolyline(flat, band.top), flat.closed, WHITE, LINE_W);
-    strokePoly(ctx, offsetPolyline(flat, band.bot), flat.closed, WHITE, LINE_W);
+    strokePoly(ctx, offsetPolyline(flat, (s) => band.top(s) + 0.12), flat.closed, WHITE, 0.24);
+    strokePoly(ctx, offsetPolyline(flat, (s) => band.bot(s) - 0.12), flat.closed, WHITE, 0.24);
     return;
   }
-  if (noGlyphs) return;
-  // P-9 on a traffic lane that ends inside this strip (taper to zero in the direction of travel)
-  if ((lane.kind === 'drive' || lane.kind === 'bus' || lane.kind === 'turn') && lane.dir !== 0) {
-    const ends = lane.dir === 1 ? band.w0 > 0.5 && band.w1 < 1e-6 : band.w1 > 0.5 && band.w0 < 1e-6;
-    const L = flat.length;
-    if (ends && L > 8) {
-      const i = lay.bands.indexOf(band);
-      const keeps = (j: number) => { const nb = lay.bands[j]; return !!nb && nb.lane.dir === lane.dir && (lane.dir === 1 ? nb.w1 : nb.w0) > 0.5 && ['drive', 'bus', 'turn'].includes(nb.lane.kind); };
-      let towardLower = keeps(i - 1); // neighbour on the path's left (-y)
-      let towardUpper = keeps(i + 1);
-      if (!towardLower && !towardUpper && lay.bands.length === 1) {
-        // a single lane that tapers away (klin włączenia): it merges toward its anchored edge
-        if (lay.spec.anchor === 'left') towardLower = true;
-        else if (lay.spec.anchor === 'right') towardUpper = true;
-      }
-      if (towardLower || towardUpper) {
-        const s = lane.dir === 1 ? Math.min(L * 0.18, 6) : L - Math.min(L * 0.18, 6);
-        const smp = sampleAt(flat, s);
-        const c = (band.top(s) + band.bot(s)) / 2;
-        let heading = Math.atan2(smp.ty, smp.tx);
-        if (lane.dir === -1) heading += Math.PI;
-        // in the arrow's local frame (+x = travel), -y is the driver's left; path-left (lower index) is driver's left only for dir 1
-        const side: -1 | 1 = towardLower ? (lane.dir === 1 ? -1 : 1) : lane.dir === 1 ? 1 : -1;
-        ctx.save(); ctx.translate(smp.x - smp.nx * c, smp.y - smp.ny * c); ctx.rotate(heading);
-        drawPictogram(ctx, side === -1 ? 'p9a' : 'p9b', { length: Math.min(5, L * 0.3), fitWidth: Math.max(0.4, band.bot(s) - band.top(s) - 0.6) });
+
+  // a lane that starts or ends inside this strip (taper / klin) gets a single P-9 arrow instead of repeated glyphs
+  if (band.w0 < 1e-6 || band.w1 < 1e-6) {
+    if (lane.dir === 0 || L < 8) return;
+    const ends = lane.dir === 1 ? band.w1 < 1e-6 : band.w0 < 1e-6;
+    if (!ends) return;
+    const i = lay.bands.indexOf(band);
+    const keeps = (j: number) => { const nb = lay.bands[j]; return !!nb && nb.lane.dir === lane.dir && (lane.dir === 1 ? nb.w1 : nb.w0) > 0.5; };
+    let towardLower = keeps(i - 1), towardUpper = keeps(i + 1);
+    if (!towardLower && !towardUpper && lay.bands.length === 1) {
+      if (lay.spec.anchor === 'left') towardLower = true; else if (lay.spec.anchor === 'right') towardUpper = true;
+    }
+    if (!towardLower && !towardUpper) return;
+    const s = lane.dir === 1 ? Math.min(L * 0.18, 6) : L - Math.min(L * 0.18, 6);
+    const f = glyphFrame(lay, band, s);
+    if (!f) return;
+    const side: -1 | 1 = towardLower ? (lane.dir === 1 ? -1 : 1) : lane.dir === 1 ? 1 : -1;
+    ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.heading);
+    drawPictogram(ctx, side === -1 ? 'p9a' : 'p9b', { length: Math.min(5, L * 0.3), fitWidth: Math.max(0.4, f.width - 0.4) });
+    ctx.restore();
+    return;
+  }
+
+  if (marking === 'p23') {
+    const h = Math.min(1.9, Math.max(0.6, nominal - 0.5)); // P-23 ≈ 1,9 m long
+    const mini = lane.kind === 'bike' || lane.kind === 'bikePath';
+    for (const s of glyphPositions(lane, L, mini ? h + 3 : h, 15)) {
+      const f = glyphFrame(lay, band, s);
+      if (!f) continue;
+      const fx = Math.cos(f.heading), fy = Math.sin(f.heading);
+      const back = mini ? 1.4 : 0;
+      ctx.save(); ctx.translate(f.x - fx * back, f.y - fy * back); ctx.rotate(f.heading + Math.PI / 2);
+      drawBikeGlyph(ctx, 0, 0, Math.min(h, (f.width - 0.3) / 1.3));
+      ctx.restore();
+      if (mini) {
+        // P-8a mini (50 %) ahead of the bicycle
+        ctx.save(); ctx.translate(f.x + fx * 1.3, f.y + fy * 1.3); ctx.rotate(f.heading);
+        drawPictogram(ctx, 'p8a', { length: 2.5, fitWidth: Math.max(0.3, f.width - 0.4) });
         ctx.restore();
       }
     }
-  }
-  // a lane that starts or ends inside this strip (taper) gets no repeated glyphs — only the P-9 above
-  if (band.w0 < 1e-6 || band.w1 < 1e-6) return;
-  if (marking === 'bikeSymbols') {
-    const avail = Math.max(0.4, nominal - 0.3);
-    const h = Math.min(1.4, nominal * 0.8, (avail / 1.3)); // bicycle is ~1.3·h wide across the lane
-    alongBand(lay, band, 3, 15, (x, y, heading) => {
-      const fx = Math.cos(heading), fy = Math.sin(heading);
-      // P-23 bicycle (front = direction of travel)
-      ctx.save(); ctx.translate(x - fx * 0.7, y - fy * 0.7); ctx.rotate(heading + Math.PI / 2);
-      drawBikeGlyph(ctx, 0, 0, h);
-      ctx.restore();
-      // small P-8a ahead of it
-      ctx.save(); ctx.translate(x + fx * (h * 0.5 + 0.6), y + fy * (h * 0.5 + 0.6)); ctx.rotate(heading);
-      drawPictogram(ctx, 'p8a', { length: 1.6, fitWidth: avail });
-      ctx.restore();
-    });
     return;
   }
-  if (marking === 'busText') {
-    alongBand(lay, band, 6, 25, (x, y, heading) => {
-      drawTextM(ctx, 'BUS', x, y, Math.min(1.6, nominal * 0.45), { stretch: 2.4, rotate: heading + Math.PI / 2, weight: '700', family: 'Arial Narrow, Arial, sans-serif', maxWidth: Math.max(0.5, nominal - 0.6) });
-    });
+
+  if (marking === 'p22') {
+    for (const s of glyphPositions(lane, L, 1.6, 30)) {
+      const f = glyphFrame(lay, band, s);
+      if (!f) continue;
+      drawTextM(ctx, 'BUS', f.x, f.y, 1.6, { rotate: f.heading + Math.PI / 2, weight: '700', family: 'Arial Narrow, Arial, sans-serif', maxWidth: Math.min(1.62, Math.max(0.5, f.width - 0.4)) });
+    }
     return;
   }
-  const ARROW: Partial<Record<NonNullable<Lane['marking']>, PictoId>> = {
-    arrowsStraight: 'p8a', arrowsLeft: 'p8b', arrowsRight: 'p8c', arrowsStraightLeft: 'p8d', arrowsStraightRight: 'p8e',
-    arrowsLeftRight: 'p8f', arrowsAll: 'p8h', arrowsUturn: 'p8g',
-  };
+
   const picto = ARROW[marking];
   if (picto) {
-    const len = Math.min(5, flat.length * 0.4);
-    const L = flat.length;
-    const positions: number[] = [];
-    if (lane.dir === -1) for (let s = len / 2 + 1.5; s < L - 1; s += 30) positions.push(s);
-    else for (let s = L - len / 2 - 1.5; s > 1; s -= 30) positions.push(s);
-    for (const s of positions) {
-      const smp = sampleAt(flat, s);
-      if (band.bot(s) - band.top(s) < nominal * 0.7) continue;
-      const c = (band.top(s) + band.bot(s)) / 2;
-      let heading = Math.atan2(smp.ty, smp.tx);
-      if (lane.dir === -1) heading += Math.PI;
-      ctx.save(); ctx.translate(smp.x - smp.nx * c, smp.y - smp.ny * c); ctx.rotate(heading);
-      drawPictogram(ctx, picto, { length: len, fitWidth: Math.max(0.4, band.bot(s) - band.top(s) - 0.7) });
+    const len = Math.min(5, L * 0.4);
+    for (const s of glyphPositions(lane, L, len, 15)) {
+      const f = glyphFrame(lay, band, s);
+      if (!f) continue;
+      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.heading);
+      drawPictogram(ctx, picto, { length: len, fitWidth: Math.max(0.4, f.width - 0.4) });
       ctx.restore();
     }
   }
 }
 
-export function drawStrip(ctx: Ctx, obj: StripObj, opts: { noGlyphs?: boolean } = {}) {
+function drawStripMarkings(ctx: Ctx, obj: StripObj) {
   if (obj.path.nodes.length < 2) return;
   const lay = stripLayout(obj);
   const flat = lay.flat;
-  // bands
-  for (const b of lay.bands) fillPoly(ctx, bandPolygon(flat, b.top, b.bot), laneFill(b.lane));
-  // curbs
-  for (const b of lay.bands) {
-    if (CURB_KINDS.includes(b.lane.kind)) {
-      strokePoly(ctx, offsetPolyline(flat, b.top), flat.closed, CURB, 0.1);
-      strokePoly(ctx, offsetPolyline(flat, b.bot), flat.closed, CURB, 0.1);
-    }
-  }
-  // details & glyphs
-  for (const b of lay.bands) drawBandDetails(ctx, lay, b, !!opts.noGlyphs);
-  // dividers
-  for (const d of lay.dividers) strokeDividerAlong(ctx, flat, d.divider, d.at);
-  if (obj.spec.edgeLeft) strokeDividerAlong(ctx, flat, obj.spec.edgeLeft, lay.top);
-  if (obj.spec.edgeRight) strokeDividerAlong(ctx, flat, obj.spec.edgeRight, lay.bot);
+  for (const b of lay.bands) drawBandMarking(ctx, lay, b);
+  for (const d of lay.dividers) strokeLineSpec(ctx, flat, d.divider, d.at);
+  if (obj.spec.edgeLeft) strokeLineSpec(ctx, flat, obj.spec.edgeLeft, (s) => lay.top(s) + obj.spec.edgeLeft!.width / 2);
+  if (obj.spec.edgeRight) strokeLineSpec(ctx, flat, obj.spec.edgeRight, (s) => lay.bot(s) - obj.spec.edgeRight!.width / 2);
 }
 
-// ───────────────────────── line / marking paths ─────────────────────────
+// ───────────────────────── line objects ─────────────────────────
 
 export function linePolyline(obj: LineObj): Vec2[] {
   return flatten(obj.path, 0.4).pts.map((p) => ({ x: p.x, y: p.y }));
 }
 
-export function drawLine(ctx: Ctx, obj: LineObj) {
-  if (obj.path.nodes.length < 2 && obj.variant !== 'plain') return;
+function drawLineSurface(ctx: Ctx, obj: LineObj) {
+  if (obj.path.nodes.length < 2) return;
+  const flat = flatten(obj.path, 0.4);
+  const pts = flat.pts;
+  switch (obj.variant) {
+    case 'grass': case 'pavement': case 'asphalt': {
+      const poly = pts.map((p) => ({ x: p.x, y: p.y }));
+      fillPoly(ctx, poly, obj.fill || (obj.variant === 'grass' ? GRASS : obj.variant === 'pavement' ? CONCRETE : ASPHALT));
+      if (obj.variant !== 'asphalt') strokePoly(ctx, poly, true, CURB, 0.12);
+      return;
+    }
+    case 'curb':
+      strokePoly(ctx, pts, obj.path.closed, obj.color || CURB, obj.width || 0.3);
+      return;
+    case 'crosswalk': case 'bikeCrossing':
+      if (obj.fill) fillPoly(ctx, bandPolygon(flat, () => -obj.width / 2, () => obj.width / 2), obj.fill);
+      return;
+    default:
+      return;
+  }
+}
+
+function drawLineMarkings(ctx: Ctx, obj: LineObj) {
+  if (obj.path.nodes.length < 2) return;
   const flat = flatten(obj.path, 0.4);
   const pts = flat.pts;
   const closed = obj.path.closed;
-  const v = obj.variant ?? 'plain';
   ctx.lineJoin = 'round';
-  switch (v) {
+  switch (obj.variant) {
     case 'crosswalk': {
-      // P-10: 0.5 m bars across the crossing path, 1.0 m pitch; bars run perpendicular to the path
-      if (obj.fill) {
-        const poly = bandPolygon(flat, () => -obj.width / 2, () => obj.width / 2);
-        fillPoly(ctx, poly, obj.fill);
-      }
+      // P-10: pasy 0,5 m co 1,0 m równoległe do osi jezdni (prostopadłe do rysowanej ścieżki); pierwszy ≤ 0,5 m od krawędzi
       ctx.fillStyle = obj.color || WHITE;
       for (let s = 0.25; s + 0.5 <= flat.length + 0.01; s += 1.0) {
         const smp = sampleAt(flat, s + 0.25);
@@ -381,10 +618,9 @@ export function drawLine(ctx: Ctx, obj: LineObj) {
       return;
     }
     case 'bikeCrossing': {
-      const poly = bandPolygon(flat, () => -obj.width / 2, () => obj.width / 2);
-      fillPoly(ctx, poly, obj.fill || '#b5423a');
+      // P-11: dwa rzędy kwadratów 0,5 m co 1,0 m na zewnętrznych krawędziach przejazdu
       ctx.fillStyle = obj.color || WHITE;
-      for (let s = 0; s + 0.5 <= flat.length + 0.01; s += 1.0) {
+      for (let s = 0.25; s + 0.5 <= flat.length + 0.01; s += 1.0) {
         const smp = sampleAt(flat, s + 0.25);
         ctx.save(); ctx.translate(smp.x, smp.y); ctx.rotate(Math.atan2(smp.ty, smp.tx));
         ctx.fillRect(-0.25, -obj.width / 2, 0.5, 0.5);
@@ -394,69 +630,59 @@ export function drawLine(ctx: Ctx, obj: LineObj) {
       return;
     }
     case 'zigzag': {
-      // P-17: zigzag between ±width/2 every 1.0 m
-      ctx.strokeStyle = obj.color || WHITE; ctx.lineWidth = LINE_W; ctx.lineJoin = 'miter';
+      // P-17: zygzak o amplitudzie `width` (1,5 m), 2,5 m na połowę okresu, 0,12 m, zakończony poprzeczkami
+      const a = obj.width / 2;
+      ctx.strokeStyle = obj.color || WHITE; ctx.lineWidth = 0.12; ctx.lineJoin = 'miter'; ctx.lineCap = 'butt';
       ctx.beginPath();
-      let side = -1;
-      for (let s = 0; s <= flat.length; s += 1.0) {
-        const smp = sampleAt(flat, s);
-        const off = (side * obj.width) / 2;
-        const x = smp.x - smp.nx * off, y = smp.y - smp.ny * off;
-        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const L = flat.length;
+      const first = sampleAt(flat, 0);
+      ctx.moveTo(first.x - first.nx * a, first.y - first.ny * a);
+      ctx.lineTo(first.x + first.nx * a, first.y + first.ny * a);
+      let side = 1;
+      for (let s = 0; s < L; s += 2.5) {
+        const smp = sampleAt(flat, Math.min(L, s + 2.5));
         side = -side;
+        const off = side * a;
+        ctx.lineTo(smp.x - smp.nx * off, smp.y - smp.ny * off);
       }
+      const last = sampleAt(flat, L);
+      ctx.lineTo(last.x - last.nx * a, last.y - last.ny * a);
+      ctx.lineTo(last.x + last.nx * a, last.y + last.ny * a);
       ctx.stroke();
       return;
     }
     case 'hatch': {
+      // P-21a inside a closed outline: obwiednia 0,24 m, liniowanie 0,24 m co 0,39 m, skos 1:3 do najdłuższego boku
       const poly = pts.map((p) => ({ x: p.x, y: p.y }));
       if (poly.length < 3) return;
       if (obj.fill) fillPoly(ctx, poly, obj.fill);
-      ctx.save();
-      ctx.beginPath(); ctx.moveTo(poly[0].x, poly[0].y); for (const p of poly) ctx.lineTo(p.x, p.y); ctx.closePath(); ctx.clip();
+      let best = 0, dir = { x: 1, y: 0 };
+      for (let i = 0; i < poly.length; i++) {
+        const q = poly[(i + 1) % poly.length];
+        const dx = q.x - poly[i].x, dy = q.y - poly[i].y, l = Math.hypot(dx, dy);
+        if (l > best) { best = l; dir = { x: dx / l, y: dy / l }; }
+      }
+      const ang = Math.atan2(dir.y, dir.x) + Math.atan(1 / 3);
       const b = polygonBounds(poly);
-      ctx.strokeStyle = obj.color || WHITE; ctx.lineWidth = obj.width || LINE_W;
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2, R = Math.hypot(b.w, b.h) / 2 + 1;
+      ctx.save();
+      pathPoly(ctx, poly); ctx.clip();
+      ctx.translate(cx, cy); ctx.rotate(ang);
+      ctx.strokeStyle = obj.color || WHITE; ctx.lineWidth = 0.24; ctx.lineCap = 'butt';
       ctx.beginPath();
-      for (let x = b.x - b.h; x < b.x + b.w + b.h; x += 1.0) { ctx.moveTo(x, b.y); ctx.lineTo(x + b.h, b.y + b.h); }
+      for (let y = -R; y <= R; y += 0.63) { ctx.moveTo(-R, y); ctx.lineTo(R, y); }
       ctx.stroke();
       ctx.restore();
-      strokePoly(ctx, poly, true, obj.color || WHITE, obj.width || LINE_W);
+      strokePoly(ctx, poly, true, obj.color || WHITE, 0.24);
       return;
     }
-    case 'grass': case 'pavement': case 'asphalt': {
-      const poly = pts.map((p) => ({ x: p.x, y: p.y }));
-      fillPoly(ctx, poly, obj.fill || (v === 'grass' ? GRASS : v === 'pavement' ? CONCRETE : ASPHALT));
-      if (v !== 'asphalt') strokePoly(ctx, poly, true, CURB, 0.12);
+    case 'grass': case 'pavement': case 'asphalt': case 'curb':
       return;
-    }
-    case 'curb': {
-      strokePoly(ctx, pts, closed, obj.color || CONCRETE_DARK, obj.width || 0.3);
-      return;
-    }
     default: {
       const poly = pts.map((p) => ({ x: p.x, y: p.y }));
       if (closed && obj.fill) fillPoly(ctx, poly, obj.fill);
       if (obj.style === 'none' || obj.width <= 0) return;
-      const color = obj.color;
-      const w = obj.width;
-      const scaleDash = (d?: number[]) => d?.map((x) => x * Math.max(1, (w / LINE_W) ** 0.5));
-      const off = w / 2 + DOUBLE_GAP / 2;
-      switch (obj.style) {
-        case 'double':
-          strokePoly(ctx, offsetPolyline(flat, () => -off), closed, color, w);
-          strokePoly(ctx, offsetPolyline(flat, () => off), closed, color, w);
-          break;
-        case 'doubleDashedLeft':
-          strokePoly(ctx, offsetPolyline(flat, () => -off), closed, color, w, scaleDash(dashFor('dashed')));
-          strokePoly(ctx, offsetPolyline(flat, () => off), closed, color, w);
-          break;
-        case 'doubleDashedRight':
-          strokePoly(ctx, offsetPolyline(flat, () => -off), closed, color, w);
-          strokePoly(ctx, offsetPolyline(flat, () => off), closed, color, w, scaleDash(dashFor('dashed')));
-          break;
-        default:
-          strokePoly(ctx, poly, closed, color, obj.style === 'edge' ? Math.max(w, 0.2) : w, scaleDash(dashFor(obj.style)));
-      }
+      strokeLineSpec(ctx, flat, { style: obj.style, width: obj.width, dash: obj.dash, color: obj.color }, () => 0);
     }
   }
 }
@@ -487,6 +713,58 @@ export function measureTextWidth(obj: TextObj): number {
   let w = 0;
   for (const ln of obj.text.split('\n')) w = Math.max(w, c.measureText(ln).width);
   return (w / 100) * obj.fontSize;
+}
+
+// ───────────────────────── passes ─────────────────────────
+
+export type Drawable = Exclude<BzObject, { type: 'symbol' }>;
+
+/** Ranks 0–2: what an object paints in the surface pass (nothing for tram strips, pure markings and text). */
+export function drawSurface(ctx: Ctx, obj: Drawable, caps?: Cap[]) {
+  if (obj.type === 'strip') { if (!isTramStrip(obj)) drawStripSurface(ctx, obj, caps); }
+  else if (obj.type === 'line') drawLineSurface(ctx, obj);
+}
+
+/** Rank 4: paint. */
+export function drawMarkings(ctx: Ctx, obj: Drawable) {
+  switch (obj.type) {
+    case 'strip': return drawStripMarkings(ctx, obj);
+    case 'line': return drawLineMarkings(ctx, obj);
+    case 'text': return drawText(ctx, obj);
+  }
+}
+
+/**
+ * Full render of a set of objects (local-to-world by translating per object), all passes in order.
+ * Used for library thumbnails and previews; the live board uses per-pass Konva layers.
+ */
+export function drawScene(ctx: Ctx, objects: Drawable[], opts: { roadPolys?: Vec2[][]; caps?: Map<string, Cap[]> } = {}) {
+  const sorted = sortByRank(objects);
+  const caps = opts.caps ?? computeCaps(objects);
+  const roadPolys = opts.roadPolys ?? roadwayPolygons(objects);
+  const each = (fn: (o: Drawable) => void) => {
+    for (const o of sorted) {
+      if (o.visible === false) continue;
+      ctx.save();
+      ctx.translate(o.x, o.y);
+      if (o.rotation) ctx.rotate((o.rotation * Math.PI) / 180);
+      if (o.opacity !== undefined) ctx.globalAlpha *= o.opacity;
+      fn(o);
+      ctx.restore();
+    }
+  };
+  each((o) => drawSurface(ctx, o, caps.get(o.id)));
+  each((o) => { if (o.type === 'strip' && isTramStrip(o)) drawTramBand(ctx, o, roadPolys, caps.get(o.id)); });
+  each((o) => drawMarkings(ctx, o));
+  each((o) => { if (o.type === 'strip' && isTramStrip(o)) drawRails(ctx, o); });
+}
+
+/** One object, all its passes (preview while drawing). */
+export function drawObject(ctx: Ctx, obj: Drawable) {
+  ctx.save();
+  ctx.translate(-obj.x, -obj.y);
+  drawScene(ctx, [obj], { roadPolys: [], caps: new Map() });
+  ctx.restore();
 }
 
 // ───────────────────────── bounds / hit polygons ─────────────────────────
@@ -535,10 +813,4 @@ export function objectBounds(obj: BzObject): Bounds {
   }
 }
 
-export function drawObject(ctx: Ctx, obj: Exclude<BzObject, { type: 'symbol' }>, opts: { noGlyphs?: boolean } = {}) {
-  switch (obj.type) {
-    case 'strip': return drawStrip(ctx, obj, opts);
-    case 'line': return drawLine(ctx, obj);
-    case 'text': return drawText(ctx, obj);
-  }
-}
+export { specWidth };

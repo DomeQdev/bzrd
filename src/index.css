@@ -166,6 +166,7 @@ h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 
 /* ───── layers */
 .layers { overflow: auto; padding: 4px 0 80px; }
+.layer-group { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin: 10px 10px 2px; font-weight: 600; }
 .layer { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; height: 28px; cursor: default; user-select: none; border-top: 2px solid transparent; }
 .layer:hover, .layer.hover { background: var(--panel-2); }
 .layer.selected { background: var(--accent-soft); }

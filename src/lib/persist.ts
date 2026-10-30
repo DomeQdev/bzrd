@@ -43,26 +43,94 @@ async function idbGet(): Promise<Project | null> {
 }
 
 
-/** Upgrade older project files (v1 had straight roads / intersections; lines had flat point arrays). */
+// ───────────────────────── migration ─────────────────────────
+
+type Raw = Record<string, unknown>;
+
+/** v2 line styles → v3 LineSpec fields */
+function migrateStyle(style: string, width: number): { style: string; width: number; dash?: [number, number] } {
+  switch (style) {
+    case 'dashed': return { style: 'dashed', width, dash: [2, 4] };
+    case 'dashedLong': return { style: 'dashed', width, dash: [4, 2] };
+    case 'dotted': return { style: 'dashed', width, dash: [1, 1] };
+    case 'doubleDashedLeft': return { style: 'doubleDashedLeft', width, dash: [2, 4] };
+    case 'doubleDashedRight': return { style: 'doubleDashedRight', width, dash: [2, 4] };
+    case 'edge': return { style: 'solid', width: Math.max(width, 0.24) };
+    case 'double': case 'solid': case 'none': return { style, width };
+    default: return { style: 'solid', width };
+  }
+}
+
+function migrateDivider(d: Raw | undefined): Raw | undefined {
+  if (!d || typeof d !== 'object') return undefined;
+  if (typeof d.width === 'number' && typeof d.color === 'string' && (d.color as string).startsWith('#')) return d;
+  const st = migrateStyle(String(d.style ?? 'solid'), 0.12);
+  if (st.style === 'none') return undefined;
+  return { ...st, color: d.color === 'yellow' ? '#f2c230' : '#f4f4f4' };
+}
+
+const V2_MARKING: Record<string, string> = {
+  none: 'none', bikeSymbols: 'p23', busText: 'p22', tramTracks: 'tracks', parkingBays: 'p18', hatch: 'p21',
+  arrowsStraight: 'p8a', arrowsLeft: 'p8b', arrowsRight: 'p8d', arrowsStraightLeft: 'p8e', arrowsStraightRight: 'p8f',
+  arrowsLeftRight: 'p8g', arrowsAll: 'p8h', arrowsUturn: 'p8c',
+};
+/** v2 implied a marking from the lane kind; v3 lanes are bare asphalt, so make the old default explicit. */
+const V2_DEFAULT_MARKING: Record<string, string> = { bike: 'p23', bikePath: 'p23', bus: 'p22', tram: 'tracks', parking: 'p18', parkingPerp: 'p18', parkingAngle: 'p18', buffer: 'p21' };
+
+function migrateLane(l: Raw): Raw {
+  const m = typeof l.marking === 'string' ? V2_MARKING[l.marking] : V2_DEFAULT_MARKING[String(l.kind)];
+  const out = { ...l };
+  if (m && m !== 'none') out.marking = m; else delete out.marking;
+  return out;
+}
+
+/** v2 arrow symbol ids used the wrong Polish letters (P-8c was "w prawo"); v3 follows the regulation. */
+const V2_ARROW_ID: Record<string, string> = { 'arr-p8c': 'arr-p8d', 'arr-p8d': 'arr-p8e', 'arr-p8e': 'arr-p8f', 'arr-p8f': 'arr-p8g', 'arr-p8g': 'arr-p8c' };
+
+function migrateV2Object(o: Raw): Raw {
+  if (o.type === 'strip') {
+    const spec = { ...(o.spec as Raw) };
+    spec.lanes = ((spec.lanes as Raw[]) ?? []).map(migrateLane);
+    if (Array.isArray(spec.lanesEnd)) spec.lanesEnd = (spec.lanesEnd as Raw[]).map(migrateLane);
+    if (Array.isArray(spec.dividers)) spec.dividers = (spec.dividers as Raw[]).map((d) => migrateDivider(d) ?? { style: 'none', width: 0, color: '#f4f4f4' });
+    spec.edgeLeft = migrateDivider(spec.edgeLeft as Raw | undefined);
+    spec.edgeRight = migrateDivider(spec.edgeRight as Raw | undefined);
+    if (!spec.edgeLeft) delete spec.edgeLeft;
+    if (!spec.edgeRight) delete spec.edgeRight;
+    return { ...o, spec };
+  }
+  if (o.type === 'line') {
+    const st = migrateStyle(String(o.style ?? 'solid'), Number(o.width ?? 0.12));
+    return { ...o, ...st };
+  }
+  if (o.type === 'symbol' && typeof o.symbolId === 'string' && V2_ARROW_ID[o.symbolId]) return { ...o, symbolId: V2_ARROW_ID[o.symbolId] };
+  return o;
+}
+
+/** Upgrade older project files (v1: straight roads; v2: Figma-like single z-order, implicit lane markings). */
 export function migrateProject(raw: unknown): Project {
   const p = raw as Project & { version: number };
   if (!p || typeof p !== 'object' || !Array.isArray(p.objects)) throw new Error('To nie jest plik projektu BZRD');
-  if (p.version === 2) return p;
-  if (p.version !== 1) throw new Error('Nieznana wersja pliku projektu');
-  const objects = (p.objects as unknown as Array<Record<string, unknown>>)
-    .map((o) => {
-      if (o.type === 'symbol' || o.type === 'text') return o as unknown as Project['objects'][number];
-      if (o.type === 'line' && Array.isArray(o.points)) {
-        const pts = o.points as number[];
-        const nodes = [];
-        for (let i = 0; i + 1 < pts.length; i += 2) nodes.push({ x: pts[i], y: pts[i + 1], mode: 'corner' as const });
-        const v = (o.variant as string) ?? 'plain';
-        return { ...o, path: { nodes, closed: !!o.closed }, variant: ['plain', 'crosswalk', 'bikeCrossing', 'hatch', 'curb', 'grass', 'pavement'].includes(v) ? v : 'plain' } as unknown as Project['objects'][number];
-      }
-      return null; // roads / intersections / roundabouts from v1 are dropped
-    })
-    .filter((o): o is Project['objects'][number] => !!o);
-  return { ...p, version: 2, objects };
+  if (p.version === 3) return p;
+  if (p.version !== 1 && p.version !== 2) throw new Error('Nieznana wersja pliku projektu');
+  let objects: Raw[] = p.objects as unknown as Raw[];
+  if (p.version === 1) {
+    objects = objects
+      .map((o) => {
+        if (o.type === 'symbol' || o.type === 'text') return o;
+        if (o.type === 'line' && Array.isArray(o.points)) {
+          const pts = o.points as number[];
+          const nodes = [];
+          for (let i = 0; i + 1 < pts.length; i += 2) nodes.push({ x: pts[i], y: pts[i + 1], mode: 'corner' as const });
+          const v = (o.variant as string) ?? 'plain';
+          return { ...o, path: { nodes, closed: !!o.closed }, variant: ['plain', 'crosswalk', 'bikeCrossing', 'hatch', 'curb', 'grass', 'pavement'].includes(v) ? v : 'plain' };
+        }
+        return null; // roads / intersections / roundabouts from v1 are dropped
+      })
+      .filter((o): o is Raw => !!o);
+  }
+  objects = objects.map(migrateV2Object);
+  return { ...p, version: 3, objects: objects as unknown as Project['objects'] };
 }
 
 // ───────────────────────── autosave ─────────────────────────
@@ -91,12 +159,12 @@ export async function loadAutosave(): Promise<Project | null> {
   try {
     if (meta?.where === 'idb') {
       const p = await idbGet();
-      if (p && (p.version === 2 || p.version === 1) && Array.isArray(p.objects)) return migrateProject(p);
+      if (p && (p.version === 3 || p.version === 2 || p.version === 1) && Array.isArray(p.objects)) return migrateProject(p);
     }
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return meta ? await idbGet() : null;
     const p = JSON.parse(raw) as Project;
-    if (p && (p.version === 2 || p.version === 1) && Array.isArray(p.objects)) return migrateProject(p);
+    if (p && (p.version === 3 || p.version === 2 || p.version === 1) && Array.isArray(p.objects)) return migrateProject(p);
     return null;
   } catch {
     return null;

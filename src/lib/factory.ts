@@ -8,15 +8,21 @@ export function objectFromTemplate(preset: Preset, worldPath: PathData): BzObjec
   const first = worldPath.nodes[0] ?? { x: 0, y: 0 };
   const local = transformPath(worldPath, (v) => ({ x: v.x - first.x, y: v.y - first.y }));
   const t = preset.template;
+  if (t.kind === 'laneMarking') throw new Error('Oznakowanie pasa nakłada się na istniejący pas (narzędzie Oznakowanie)');
   if (t.kind === 'strip') {
     const o: StripObj = { id: uid('s'), type: 'strip', x: first.x, y: first.y, rotation: 0, name: preset.name, path: local, spec: structuredClone(t.spec) };
     return o;
   }
   const o: LineObj = {
     id: uid('l'), type: 'line', x: first.x, y: first.y, rotation: 0, name: preset.name, path: local,
-    width: t.width, style: t.style, color: t.color, fill: t.fill, variant: t.variant,
+    width: t.width, style: t.style, dash: t.dash, color: t.color, fill: t.fill, variant: t.variant, code: t.code,
   };
   return o;
+}
+
+/** Can this preset be drawn as a path (pen / shapes / marking tool)? */
+export function isDrawable(preset: Preset | null | undefined): boolean {
+  return !!preset && preset.template.kind !== 'laneMarking';
 }
 
 export function objectFromSymbol(def: SymbolDef, x: number, y: number): SymbolObj {

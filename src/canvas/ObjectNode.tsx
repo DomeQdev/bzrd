@@ -2,13 +2,15 @@ import { memo, useCallback, useMemo } from 'react';
 import Konva from 'konva';
 import { Group, Image as KImage, Rect, Shape } from 'react-konva';
 import type { BzObject, SymbolObj } from '../model/types';
-import { drawObject, hitPolygon, objectBounds } from './draw';
+import { drawSurface, hitPolygon, objectBounds, type Cap, type Drawable } from './draw';
 import { useProject } from '../store/project';
 import { useSymbolImage } from './symbolImage';
 import { symbolById } from '../assets/symbols';
 
 export interface ObjectNodeProps {
   obj: BzObject;
+  /** round joints with neighbouring strips (object-local) */
+  caps?: Cap[];
   draggable: boolean;
   listening: boolean;
   onMouseDown: (id: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
@@ -28,7 +30,11 @@ function SymbolBody({ obj }: { obj: SymbolObj }) {
   return <KImage image={img} x={0} y={0} offsetX={obj.width / 2} offsetY={obj.height / 2} width={obj.width} height={obj.height} scaleX={obj.flipX ? -1 : 1} />;
 }
 
-export const ObjectNode = memo(function ObjectNode({ obj, draggable, listening, onMouseDown, onDblClick, onHover, onDragStart, onDragMove, onDragEnd, onTransformEnd }: ObjectNodeProps) {
+/**
+ * One Konva group per object: hit area (always) + the object's SURFACE pass. Paint, tram slabs and rails are drawn
+ * by the scene shape above (see Board), so dragging updates the store live to keep the two in sync.
+ */
+export const ObjectNode = memo(function ObjectNode({ obj, caps, draggable, listening, onMouseDown, onDblClick, onHover, onDragStart, onDragMove, onDragEnd, onTransformEnd }: ObjectNodeProps) {
   const scale = useProject((s) => s.viewport.scale);
   const minHalf = 5 / scale; // at least ~5 screen px of hit slack for thin lines
   const b = useMemo(() => objectBounds(obj), [obj]);
@@ -38,10 +44,10 @@ export const ObjectNode = memo(function ObjectNode({ obj, draggable, listening, 
     (context: Konva.Context) => {
       const ctx = (context as unknown as { _context: CanvasRenderingContext2D })._context;
       ctx.save();
-      drawObject(ctx, obj as Exclude<BzObject, { type: 'symbol' }>);
+      drawSurface(ctx, obj as Drawable, caps);
       ctx.restore();
     },
-    [obj],
+    [obj, caps],
   );
   const hitFunc = useCallback(
     (context: Konva.Context, shape: Konva.Shape) => {

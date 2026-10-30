@@ -1,33 +1,77 @@
-import type { Preset } from '../model/types';
+import type { LaneMarking, LineCode, Preset } from '../model/types';
+import { LANE_MARKING_LABEL, LINE_CODES, WHITE, lineSpec } from './helpers';
 
-export const CATEGORY = 'Znaki poziome';
-const W = '#f4f4f4';
+export const CATEGORY = 'Oznakowanie';
 
-function p(id: string, name: string, group: string, template: Preset['template'], description: string, tags: string[] = []): Preset {
-  return { id: `mk-${id}`, name, category: CATEGORY, group, template, description, tags };
+function line(code: LineCode): Preset {
+  const def = LINE_CODES.find((c) => c.code === code)!;
+  const transverse = code === 'p12' || code === 'p13' || code === 'p14';
+  return {
+    id: `mk-${code}`,
+    name: def.name,
+    category: CATEGORY,
+    group: transverse ? 'Linie zatrzymania (rysuj w poprzek pasa)' : 'Linie (kropka → kropka)',
+    template: { kind: 'line', ...lineSpec(code), variant: 'plain', code },
+    description: def.description,
+    tags: ['linia', def.short, def.spec.style],
+  };
 }
 
-/** Line markings drawn with the pen / line tools. */
+function laneMark(marking: LaneMarking, description: string, tags: string[] = []): Preset {
+  return {
+    id: `lm-${marking}`,
+    name: LANE_MARKING_LABEL[marking],
+    category: CATEGORY,
+    group: 'Na pasie (kliknij pas)',
+    template: { kind: 'laneMarking', marking },
+    description,
+    tags: ['pas', marking, ...tags],
+  };
+}
+
+/** Everything that is PAINT (or structural detail) — drawn after the surfaces. */
 export const presets: Preset[] = [
-  p('p1', 'P-1 linia pojedyncza przerywana', 'Linie', { kind: 'line', width: 0.12, style: 'dashed', color: W, variant: 'plain' }, 'Linia segregacyjna 2 m / 4 m (teren zabudowany)', ['przerywana', 'dashed']),
-  p('p1c', 'P-1c linia krótka', 'Linie', { kind: 'line', width: 0.12, style: 'dotted', color: W, variant: 'plain' }, 'Linia przerywana 1 m / 1 m przy skrzyżowaniach'),
-  p('p2', 'P-2 linia pojedyncza ciągła', 'Linie', { kind: 'line', width: 0.12, style: 'solid', color: W, variant: 'plain' }, 'Linia ciągła, zakaz przejeżdżania', ['ciągła', 'solid']),
-  p('p3l', 'P-3 jednostronnie przekraczalna (przerywana z lewej)', 'Linie', { kind: 'line', width: 0.12, style: 'doubleDashedLeft', color: W, variant: 'plain' }, 'Linia podwójna: przerywana po lewej, ciągła po prawej'),
-  p('p3r', 'P-3 jednostronnie przekraczalna (przerywana z prawej)', 'Linie', { kind: 'line', width: 0.12, style: 'doubleDashedRight', color: W, variant: 'plain' }, 'Linia podwójna: ciągła po lewej, przerywana po prawej'),
-  p('p4', 'P-4 linia podwójna ciągła', 'Linie', { kind: 'line', width: 0.12, style: 'double', color: W, variant: 'plain' }, 'Oś jezdni, zakaz przekraczania w obu kierunkach', ['podwójna']),
-  p('p6', 'P-6 linia ostrzegawcza', 'Linie', { kind: 'line', width: 0.12, style: 'dashedLong', color: W, variant: 'plain' }, 'Linia 4 m / 2 m przed linią ciągłą'),
-  p('p7', 'P-7 linia krawędziowa', 'Linie', { kind: 'line', width: 0.24, style: 'edge', color: W, variant: 'plain' }, 'Krawędź jezdni (0,24 m)'),
-  p('p7b', 'P-7b linia krawędziowa przerywana', 'Linie', { kind: 'line', width: 0.24, style: 'dashed', color: W, variant: 'plain' }, 'Krawędź jezdni przerywana (zjazdy)'),
-  p('p12', 'P-12 linia bezwzględnego zatrzymania', 'Linie', { kind: 'line', width: 0.5, style: 'solid', color: W, variant: 'plain' }, 'Linia STOP 0,5 m (ze znakiem B-20)', ['stop']),
-  p('p14', 'P-14 linia warunkowego zatrzymania', 'Linie', { kind: 'line', width: 0.5, style: 'dotted', color: W, variant: 'plain' }, 'Linia z prostokątów 0,5 m (sygnalizacja / A-7)'),
-  p('p10', 'P-10 przejście dla pieszych', 'Przejścia', { kind: 'line', width: 4, style: 'solid', color: W, variant: 'crosswalk' }, 'Zebra: pasy 0,5 m co 1,0 m, szerokość 4 m (rysuj w poprzek jezdni)', ['zebra', 'przejście']),
-  p('p11', 'P-11 przejazd dla rowerzystów', 'Przejścia', { kind: 'line', width: 2.0, style: 'solid', color: W, variant: 'bikeCrossing', fill: '#b5423a' }, 'Dwa rzędy kwadratów 0,5 m na czerwonej nawierzchni', ['przejazd', 'rower']),
-  p('p17', 'P-17 linia przystankowa', 'Linie', { kind: 'line', width: 1.0, style: 'solid', color: W, variant: 'zigzag' }, 'Zygzak wyznaczający przystanek (rysuj wzdłuż krawężnika)'),
-  p('p21', 'P-21 powierzchnia wyłączona z ruchu', 'Powierzchnie', { kind: 'line', width: 0.12, style: 'solid', color: W, variant: 'hatch', closedOnly: true }, 'Szrafura w obrysie (zamknięty wielokąt)', ['szrafura']),
-  p('asphalt', 'Nawierzchnia asfaltowa', 'Powierzchnie', { kind: 'line', width: 0, style: 'none', color: W, fill: '#3a3d42', variant: 'asphalt', closedOnly: true }, 'Wypełnienie asfaltem (np. plac skrzyżowania, zatoka)', ['asfalt']),
-  p('red', 'Nawierzchnia czerwona', 'Powierzchnie', { kind: 'line', width: 0, style: 'none', color: W, fill: '#b5423a', variant: 'asphalt', closedOnly: true }, 'Czerwona nawierzchnia (DDR, przejazd)', ['czerwona']),
-  p('pavement', 'Chodnik / plac', 'Powierzchnie', { kind: 'line', width: 0.12, style: 'none', color: W, fill: '#cfcbc3', variant: 'pavement', closedOnly: true }, 'Nawierzchnia betonowa z krawężnikiem'),
-  p('grass', 'Trawnik', 'Powierzchnie', { kind: 'line', width: 0.12, style: 'none', color: W, fill: '#5b8a3c', variant: 'grass', closedOnly: true }, 'Zieleń z krawężnikiem'),
-  p('curb', 'Krawężnik', 'Linie', { kind: 'line', width: 0.3, style: 'solid', color: '#aaa69e', variant: 'curb' }, 'Krawężnik betonowy 0,3 m'),
-  p('custom', 'Linia własna', 'Linie', { kind: 'line', width: 0.12, style: 'solid', color: W, variant: 'plain' }, 'Dowolna linia (kolor, grubość, styl w panelu)'),
+  ...(['p1b', 'p1a', 'p1c', 'p1d', 'p1e', 'p2a', 'p2b', 'p3a', 'p3b', 'p4', 'p5', 'p6', 'p7b', 'p7a', 'p7d', 'p7c', 'custom'] as LineCode[]).map(line),
+  {
+    id: 'mk-p10', name: 'P-10 przejście dla pieszych', category: CATEGORY, group: 'Przejścia (kropka → kropka w poprzek jezdni)',
+    template: { kind: 'line', width: 4, style: 'solid', color: WHITE, variant: 'crosswalk' },
+    description: 'Zebra: pasy 0,5 m co 1,0 m, szerokość 4 m (min. 2,5 m w mieście)', tags: ['zebra', 'przejście', 'P-10'],
+  },
+  {
+    id: 'mk-p11', name: 'P-11 przejazd dla rowerzystów', category: CATEGORY, group: 'Przejścia (kropka → kropka w poprzek jezdni)',
+    template: { kind: 'line', width: 2.0, style: 'solid', color: WHITE, variant: 'bikeCrossing', fill: '#b5423a' },
+    description: 'Dwa rzędy kwadratów 0,5 m co 1,0 m, szerokość ≥ 1,8 m (3,0 m dwukierunkowy), czerwona nawierzchnia', tags: ['przejazd', 'rower', 'P-11'],
+  },
+  {
+    id: 'mk-p11-plain', name: 'P-11 przejazd dla rowerzystów (bez czerwieni)', category: CATEGORY, group: 'Przejścia (kropka → kropka w poprzek jezdni)',
+    template: { kind: 'line', width: 2.0, style: 'solid', color: WHITE, variant: 'bikeCrossing' },
+    description: 'Dwa rzędy kwadratów 0,5 m bez czerwonej nawierzchni', tags: ['przejazd', 'rower', 'P-11'],
+  },
+  ...(['p12', 'p13', 'p14'] as LineCode[]).map(line),
+  {
+    id: 'mk-p17', name: 'P-17 linia przystankowa', category: CATEGORY, group: 'Inne',
+    template: { kind: 'line', width: 1.5, style: 'solid', color: WHITE, variant: 'zigzag' },
+    description: 'Zygzak 1,5 m co 2,5 m, długość 30–60 m (rysuj wzdłuż krawężnika)', tags: ['P-17', 'przystanek', 'zygzak'],
+  },
+  {
+    id: 'mk-p21', name: 'P-21a powierzchnia wyłączona z ruchu', category: CATEGORY, group: 'Inne',
+    template: { kind: 'line', width: 0.24, style: 'solid', color: WHITE, variant: 'hatch', closedOnly: true },
+    description: 'Obwiednia P-7b 0,24 m, liniowanie 0,24 m co 0,39 m, skos 1:3 (zamknięty wielokąt)', tags: ['P-21', 'szrafura', 'wyspa'],
+  },
+  laneMark('p8a', 'Strzałka kierunkowa na wprost, 5 m, co 15 m', ['strzałka']),
+  laneMark('p8b', 'Strzałka kierunkowa w lewo', ['strzałka']),
+  laneMark('p8d', 'Strzałka kierunkowa w prawo', ['strzałka']),
+  laneMark('p8e', 'Strzałka kierunkowa na wprost lub w lewo', ['strzałka']),
+  laneMark('p8f', 'Strzałka kierunkowa na wprost lub w prawo', ['strzałka']),
+  laneMark('p8g', 'Strzałka kierunkowa w lewo lub w prawo', ['strzałka']),
+  laneMark('p8h', 'Strzałka kierunkowa na wprost, w lewo lub w prawo', ['strzałka']),
+  laneMark('p8c', 'Strzałka kierunkowa do zawracania', ['strzałka', 'zawracanie']),
+  laneMark('p8i', 'Strzałka kierunkowa na wprost i do zawracania', ['strzałka', 'zawracanie']),
+  laneMark('p9a', 'Strzałka naprowadzająca w lewo (pas zanika w lewo)', ['strzałka', 'zmiana pasa']),
+  laneMark('p9b', 'Strzałka naprowadzająca w prawo (pas zanika w prawo)', ['strzałka', 'zmiana pasa']),
+  laneMark('p22', 'Napis BUS 1,62 × 1,60 m, co 30 m', ['bus', 'napis']),
+  laneMark('p23', 'Symbol roweru P-23 (co 15 m)', ['rower']),
+  laneMark('p18', 'Stanowiska postojowe P-18 (linie 0,12 m)', ['parking']),
+  laneMark('p21', 'Szrafura P-21a na całym pasie', ['szrafura']),
+  laneMark('none', 'Usuwa oznakowanie z pasa'),
 ];

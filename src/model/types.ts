@@ -5,11 +5,11 @@ import type { Units } from './units';
 /** Kinds of lanes/strips a cross-section is made of (left -> right looking along the path). */
 export type LaneKind =
   | 'drive'          // pas ruchu
-  | 'turn'           // pas do skrętu (strzałki P-8)
-  | 'bike'           // pas ruchu dla rowerów (na jezdni, P-23, 1.5 m)
+  | 'turn'           // pas do skrętu
+  | 'bike'           // pas ruchu dla rowerów (na jezdni, 1.5 m)
   | 'bikePath'       // droga dla rowerów (wydzielona, czerwona nawierzchnia, 2.0 / 2.5 m)
-  | 'bus'            // buspas (P-22 "BUS", 3.5 m)
-  | 'parking'        // parkowanie równoległe (P-19 / P-18)
+  | 'bus'            // buspas (3.5 m)
+  | 'parking'        // parkowanie równoległe
   | 'parkingPerp'    // parkowanie prostopadłe
   | 'parkingAngle'   // parkowanie skośne
   | 'tram'           // torowisko tramwajowe (jeden tor)
@@ -22,34 +22,65 @@ export type LaneKind =
   | 'shoulder';      // pobocze
 
 /**
- * Line styles — Polish horizontal markings:
- *  solid             P-2 linia pojedyncza ciągła
- *  dashed            P-1 linia pojedyncza przerywana (2 m / 4 m w terenie zabudowanym)
- *  dashedLong        P-6 linia ostrzegawcza (4 m / 2 m)
- *  dotted            P-1c linia krótka (1 m / 1 m) przy skrzyżowaniach
- *  double            P-4 linia podwójna ciągła
- *  doubleDashedLeft  P-3 linia jednostronnie przekraczalna (przerywana po lewej)
- *  doubleDashedRight P-3 (przerywana po prawej)
- *  edge              P-7 linia krawędziowa
- *  none              brak
+ * Geometry of a painted line (Polish P-1 … P-7, P-12 … P-14). The code (P-1b, P-2a, …) only picks
+ * the values below; what is drawn is always `style` + `width` + `dash`.
+ *  solid              linia ciągła
+ *  dashed             linia przerywana (dash = [kreska, przerwa] w metrach)
+ *  double             linia podwójna ciągła (P-4)
+ *  doubleDashedLeft   linia jednostronnie przekraczalna, przerywana po lewej (P-3)
+ *  doubleDashedRight  … przerywana po prawej (P-3)
+ *  doubleDashed       linia podwójna przerywana (P-5)
+ *  triangles          linia warunkowego zatrzymania z trójkątów (P-13)
+ *  blocks             linia warunkowego zatrzymania z prostokątów (P-14)
+ *  none               nic nie jest malowane (tylko wypełnienie kształtu)
  */
 export type LineStyle =
   | 'solid'
   | 'dashed'
-  | 'dashedLong'
-  | 'dotted'
   | 'double'
   | 'doubleDashedLeft'
   | 'doubleDashedRight'
-  | 'edge'
+  | 'doubleDashed'
+  | 'triangles'
+  | 'blocks'
   | 'none';
-/** white = standard; yellow = oznakowanie tymczasowe (roboty drogowe) */
-export type LineColor = 'white' | 'yellow';
 
-export interface Divider {
+export interface LineSpec {
   style: LineStyle;
-  color: LineColor;
+  /** stroke width in meters (0.12 wąska, 0.24 szeroka, 0.5 linie zatrzymania) */
+  width: number;
+  /** [kreska, przerwa] in meters for dashed styles */
+  dash?: [number, number];
+  /** hex; white = standard, yellow = oznakowanie tymczasowe */
+  color: string;
 }
+
+/** A line painted on the edge of a strip (or between lanes). */
+export type Divider = LineSpec;
+
+/** Polish codes of painted lines (drawn with the marking tool or set on a strip edge). */
+export type LineCode =
+  | 'p1a' | 'p1b' | 'p1c' | 'p1d' | 'p1e'
+  | 'p2a' | 'p2b'
+  | 'p3a' | 'p3b'
+  | 'p4' | 'p5' | 'p6'
+  | 'p7a' | 'p7b' | 'p7c' | 'p7d'
+  | 'p12' | 'p13' | 'p14'
+  | 'custom';
+
+/**
+ * Markings painted along a lane (Polish codes):
+ *  p8a na wprost · p8b w lewo · p8c do zawracania · p8d w prawo · p8e na wprost lub w lewo
+ *  p8f na wprost lub w prawo · p8g w lewo lub w prawo · p8h na wprost, w lewo lub w prawo · p8i na wprost i do zawracania
+ *  p9a / p9b strzałki naprowadzające · p22 napis BUS · p23 rower · p18 stanowiska postojowe · p21 powierzchnia wyłączona
+ *  tracks tory tramwajowe (konstrukcja, nie farba)
+ */
+export type LaneMarking =
+  | 'none'
+  | 'p8a' | 'p8b' | 'p8c' | 'p8d' | 'p8e' | 'p8f' | 'p8g' | 'p8h' | 'p8i'
+  | 'p9a' | 'p9b'
+  | 'p22' | 'p23' | 'p18' | 'p21'
+  | 'tracks';
 
 export interface Lane {
   kind: LaneKind;
@@ -57,8 +88,11 @@ export interface Lane {
   width: number;
   /** 1 = flows along the path direction, -1 = against it, 0 = no flow */
   dir: 1 | -1 | 0;
-  marking?: 'none' | 'bikeSymbols' | 'busText' | 'tramTracks' | 'parkingBays' | 'hatch'
-    | 'arrowsStraight' | 'arrowsLeft' | 'arrowsRight' | 'arrowsStraightLeft' | 'arrowsStraightRight' | 'arrowsLeftRight' | 'arrowsAll' | 'arrowsUturn';
+  marking?: LaneMarking;
+  /** spacing of repeated glyphs along the lane (m); default 15 (strzałki co 15 m w terenie zabudowanym) */
+  markGap?: number;
+  /** how many glyphs from the exit end of the lane; 0 = along the whole lane; default 3 */
+  markCount?: number;
   /** Optional surface tint override (hex) */
   surface?: string;
 }
@@ -75,8 +109,7 @@ export interface RoadSpec {
   anchor?: 'left' | 'right' | 'center';
   /**
    * Lateral shift of the whole cross-section relative to the path (meters, + = right of travel).
-   * 0 = path runs through the middle. Changed automatically when lanes are added with
-   * "Zachowaj położenie pasów" so existing lanes stay where they are on the map.
+   * 0 = path runs through the middle.
    */
   offset?: number;
   /** offset at the END of the path (transitions between two different strips); defaults to `offset` */
@@ -121,16 +154,21 @@ export interface BaseObj {
   groupId?: string;
 }
 
+/** Reference to one end of a path object. */
+export interface EndRef { id: string; atStart: boolean }
+
 /** A strip (pas / jezdnia): a cross-section swept along a bezier path. */
 export interface StripObj extends BaseObj {
   type: 'strip';
   path: PathData;
   spec: RoadSpec;
+  /** set on łączniki created with the link tool: which ends this piece connects */
+  link?: { a: EndRef; b: EndRef };
 }
 
-/** A marking path (znak poziomy liniowy) or a plain shape. */
+/** A marking path (znak poziomy) or a surface shape. */
 export type LineVariant =
-  | 'plain'        // zwykła linia / wielokąt (styl + kolor + wypełnienie)
+  | 'plain'        // linia (styl + kolor) / wielokąt z wypełnieniem
   | 'crosswalk'    // P-10 zebra wzdłuż ścieżki (width = szerokość przejścia)
   | 'bikeCrossing' // P-11 przejazd dla rowerzystów
   | 'hatch'        // P-21 powierzchnia wyłączona (zamknięty)
@@ -145,9 +183,12 @@ export interface LineObj extends BaseObj {
   path: PathData;
   width: number;    // stroke width (or crossing width) in meters
   style: LineStyle;
+  dash?: [number, number];
   color: string;    // hex
-  fill?: string;    // hex (closed shapes)
+  fill?: string;    // hex (closed shapes / crossing background)
   variant: LineVariant;
+  /** Polish code this line was created from (for the inspector); 'custom' when edited */
+  code?: LineCode;
 }
 
 /** Library symbol (vehicle, sign, tree, arrow, word...). Local origin = symbol center. */
@@ -183,29 +224,33 @@ export type Background =
   | { kind: 'image'; dataUrl: string; widthM: number; heightM: number; geo?: GeoRef; opacity?: number };
 
 export interface Project {
-  version: 2;
+  version: 3;
   name: string;
   units: Units;
   widthM: number;
   heightM: number;
   pxPerMeter: number;
   background: Background;
-  /** bottom -> top */
+  /** creation order; what is drawn above what is decided by the object's category (see canvas/draw.ts) */
   objects: BzObject[];
   updatedAt: number;
 }
 
 // ───────────────────────── Library ─────────────────────────
 
-/** Something you pick in the library and then DRAW with pen / line / rect / ellipse. */
+/** Something you pick in the library. */
 export type DrawTemplate =
+  /** a strip drawn with pen / line */
   | { kind: 'strip'; spec: RoadSpec }
-  | { kind: 'line'; width: number; style: LineStyle; color: string; fill?: string; variant: LineVariant; closedOnly?: boolean };
+  /** a line / shape drawn with pen / marking tool / rect / ellipse */
+  | { kind: 'line'; width: number; style: LineStyle; dash?: [number, number]; color: string; fill?: string; variant: LineVariant; closedOnly?: boolean; code?: LineCode }
+  /** a glyph applied to a lane with the marking tool (click on the lane) */
+  | { kind: 'laneMarking'; marking: LaneMarking };
 
 export interface Preset {
   id: string;
   name: string;
-  /** 'Pasy' | 'Znaki poziome' */
+  /** 'Nawierzchnia' | 'Oznakowanie' */
   category: string;
   group?: string;
   template: DrawTemplate;

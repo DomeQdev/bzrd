@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import type { BzObject, Divider, Lane, LaneKind, LineObj, RoadSpec, StripObj, SymbolObj, TextObj } from '../model/types';
+import type { BzObject, Lane, LaneKind, LaneMarking, LineCode, LineObj, LineSpec, RoadSpec, StripObj, SymbolObj, TextObj } from '../model/types';
 import { useProject } from '../store/project';
 import { LANE_TEMPLATES } from '../catalog';
+import { LANE_MARKINGS, LANE_MARKING_LABEL, LINE_CODES, WHITE, YELLOW, codeOfSpec, lineSpec } from '../catalog/helpers';
 import { LANE_KIND_LABEL, LINE_STYLE_LABEL, laneFill, mergeLanes, specWidth } from '../canvas/roadGeometry';
 import { symbolById } from '../assets/symbols';
 import { cutAtNode, offsetPath, reversePath, smoothNode, cornerNode, setPathLength, rotatePath, polygonBounds } from '../canvas/path';
@@ -9,19 +10,14 @@ import { normalizeOrigin } from '../lib/factory';
 import { uid } from '../store/project';
 import { NumberInput } from './NumberInput';
 import { mergeChain, type PathObj } from '../lib/merge';
-import { ArrowDown, ArrowUp, ChevronsDown, ChevronsUp, Copy, FlipHorizontal2, Lock, LockOpen, Trash2 } from 'lucide-react';
+import { Copy, FlipHorizontal2, Lock, LockOpen, Trash2 } from 'lucide-react';
 import { formatLength } from '../model/units';
 import { flatten } from '../canvas/path';
+import { RANK_LABEL, objectRank } from '../canvas/draw';
 
-const LINE_STYLES = Object.keys(LINE_STYLE_LABEL) as Divider['style'][];
+const LINE_STYLES = Object.keys(LINE_STYLE_LABEL) as LineSpec['style'][];
 const LANE_KINDS = Object.keys(LANE_KIND_LABEL) as LaneKind[];
-const MARKINGS: Array<{ id: NonNullable<Lane['marking']>; label: string }> = [
-  { id: 'none', label: 'brak' }, { id: 'bikeSymbols', label: 'P-23 rower' }, { id: 'busText', label: 'P-22 BUS' }, { id: 'tramTracks', label: 'tory' },
-  { id: 'parkingBays', label: 'P-18 stanowiska' }, { id: 'hatch', label: 'P-21 szrafura' },
-  { id: 'arrowsStraight', label: 'P-8a na wprost' }, { id: 'arrowsLeft', label: 'P-8b w lewo' }, { id: 'arrowsRight', label: 'P-8c w prawo' },
-  { id: 'arrowsStraightLeft', label: 'P-8d na wprost lub w lewo' }, { id: 'arrowsStraightRight', label: 'P-8e na wprost lub w prawo' },
-  { id: 'arrowsLeftRight', label: 'P-8f w lewo lub w prawo' }, { id: 'arrowsUturn', label: 'P-8g zawracanie' }, { id: 'arrowsAll', label: 'P-8h na wprost, w lewo lub w prawo' },
-];
+const REPEATED: LaneMarking[] = ['p8a', 'p8b', 'p8c', 'p8d', 'p8e', 'p8f', 'p8g', 'p8h', 'p8i', 'p9a', 'p9b', 'p22', 'p23'];
 
 function Section({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -29,6 +25,48 @@ function Section({ title, children, right }: { title: string; children: React.Re
       <div className="section-h"><span>{title}</span>{right}</div>
       {children}
     </div>
+  );
+}
+
+/** Picker for a painted line: Polish code or none; "własna" keeps the current spec editable. */
+function LineCodeSelect({ value, onPick, allowNone = true }: { value: LineSpec | undefined; onPick: (d: LineSpec | undefined) => void; allowNone?: boolean }) {
+  const code = value ? codeOfSpec(value) : 'none';
+  return (
+    <select value={code} onChange={(e) => {
+      const v = e.target.value as LineCode | 'none';
+      if (v === 'none') onPick(undefined);
+      else if (v === 'custom') onPick(value ?? lineSpec('p2a'));
+      else onPick(lineSpec(v, value?.color ?? WHITE));
+    }}>
+      {allowNone && <option value="none">brak</option>}
+      {LINE_CODES.map((c) => <option key={c.code} value={c.code} title={c.description}>{c.name}</option>)}
+    </select>
+  );
+}
+
+/** Editable fields of a line spec (shown when the line is "własna" or to tweak colour). */
+function LineSpecFields({ value, onChange }: { value: LineSpec; onChange: (d: LineSpec) => void }) {
+  const dashed = ['dashed', 'doubleDashedLeft', 'doubleDashedRight', 'doubleDashed', 'blocks'].includes(value.style);
+  return (
+    <>
+      <div className="prop"><span>Styl</span>
+        <select value={value.style} onChange={(e) => onChange({ ...value, style: e.target.value as LineSpec['style'] })}>
+          {LINE_STYLES.filter((s) => s !== 'none').map((s) => <option key={s} value={s}>{LINE_STYLE_LABEL[s]}</option>)}
+        </select>
+      </div>
+      <div className="prop"><span>Grubość</span><NumberInput value={value.width} step={0.02} min={0.02} suffix="m" onChange={(w) => onChange({ ...value, width: w })} /></div>
+      {dashed && (
+        <div className="prop"><span>Kreska / przerwa</span><span className="pair">
+          <NumberInput value={value.dash?.[0] ?? 2} step={0.5} min={0.1} suffix="m" onChange={(a) => onChange({ ...value, dash: [a, value.dash?.[1] ?? 4] })} />
+          <NumberInput value={value.dash?.[1] ?? 4} step={0.5} min={0.1} suffix="m" onChange={(b) => onChange({ ...value, dash: [value.dash?.[0] ?? 2, b] })} />
+        </span></div>
+      )}
+      <div className="prop"><span>Kolor</span><span className="row-inline">
+        <input type="color" value={value.color} onChange={(e) => onChange({ ...value, color: e.target.value })} />
+        <button className="mini" onClick={() => onChange({ ...value, color: WHITE })}>biały</button>
+        <button className="mini" onClick={() => onChange({ ...value, color: YELLOW })} title="Oznakowanie tymczasowe (roboty drogowe)">żółty</button>
+      </span></div>
+    </>
   );
 }
 
@@ -118,9 +156,10 @@ function StripPanel({ obj }: { obj: StripObj }) {
   const replaceWith = useProject((s) => s.replaceWith);
   const [tpl, setTpl] = useState(LANE_TEMPLATES[0]?.id ?? '');
   const lanes = obj.spec.lanes;
-  const legacy = lanes.length !== 1 || !!obj.spec.lanesEnd;
+  const legacy = lanes.length !== 1;
   const lane = lanes[0];
-  const setLane = (patch: Partial<Lane>) => upd(obj.id, { spec: { ...obj.spec, lanes: [{ ...lane, ...patch }] } } as Partial<BzObject>);
+  const taper = !!obj.spec.lanesEnd;
+  const setLane = (patch: Partial<Lane>) => upd(obj.id, { spec: { ...obj.spec, lanes: [{ ...lane, ...patch }], lanesEnd: obj.spec.lanesEnd?.map((l) => ({ ...l, ...patch, width: l.width })) } } as Partial<BzObject>);
   const setSpec = (patch: Partial<RoadSpec>) => upd(obj.id, { spec: { ...obj.spec, ...patch } } as Partial<BzObject>);
 
   /** New single-lane strip touching this one edge-to-edge, parallel along the whole path (also on curves). */
@@ -149,11 +188,7 @@ function StripPanel({ obj }: { obj: StripObj }) {
     replaceWith(obj.id, out);
   };
 
-  const edgeSelect = (value: Divider | undefined, onPick: (d: Divider | undefined) => void) => (
-    <select value={value?.style ?? 'none'} onChange={(e) => onPick(e.target.value === 'none' ? undefined : { style: e.target.value as Divider['style'], color: 'white' })}>
-      {LINE_STYLES.map((st) => <option key={st} value={st}>{LINE_STYLE_LABEL[st]}</option>)}
-    </select>
-  );
+  const marking = lane?.marking ?? (lane?.kind === 'tram' ? 'tracks' : lane?.kind === 'buffer' ? 'p21' : 'none');
 
   return (
     <>
@@ -165,13 +200,17 @@ function StripPanel({ obj }: { obj: StripObj }) {
         </Section>
       ) : (
         <>
-          <Section title="Pas">
+          <Section title={obj.link ? 'Łącznik' : 'Pas'}>
+            {obj.link && <div className="hint">Osobny segment łączący dwa końce pasów; można go edytować jak każdy pas.</div>}
             <div className="prop"><span>Rodzaj</span>
               <select value={lane.kind} onChange={(e) => setLane({ kind: e.target.value as LaneKind, marking: undefined, surface: undefined })}>
                 {LANE_KINDS.map((k) => <option key={k} value={k}>{LANE_KIND_LABEL[k]}</option>)}
               </select>
             </div>
             <div className="prop"><span>Szerokość</span><NumberInput value={lane.width} step={0.25} min={0.2} suffix="m" onChange={(v) => setLane({ width: v })} /></div>
+            {taper && obj.spec.lanesEnd?.[0] && (
+              <div className="prop"><span>Szer. na końcu</span><NumberInput value={obj.spec.lanesEnd[0].width} step={0.25} min={0} suffix="m" onChange={(v) => setSpec({ lanesEnd: [{ ...obj.spec.lanesEnd![0], width: v }] })} /></div>
+            )}
             <div className="prop"><span>Kierunek</span>
               <span className="seg">
                 <button className={lane.dir === 1 ? 'on' : ''} onClick={() => setLane({ dir: 1 })} title="Ruch zgodnie z kierunkiem rysowania">→</button>
@@ -179,22 +218,30 @@ function StripPanel({ obj }: { obj: StripObj }) {
                 <button className={lane.dir === 0 ? 'on' : ''} onClick={() => setLane({ dir: 0 })} title="Bez kierunku (chodnik, zieleń, parkowanie)">brak</button>
               </span>
             </div>
-            <div className="prop"><span>Oznakowanie</span>
-              <select value={lane.marking ?? 'default'} onChange={(e) => setLane({ marking: e.target.value === 'default' ? undefined : (e.target.value as Lane['marking']) })}>
-                <option value="default">domyślne</option>
-                {MARKINGS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-              </select>
-            </div>
             <div className="prop"><span>Nawierzchnia</span>
               <span className="row-inline">
                 <input type="color" value={lane.surface ?? laneFill({ ...lane, surface: undefined })} onChange={(e) => setLane({ surface: e.target.value })} />
                 <button className="mini" onClick={() => setLane({ surface: undefined })}>domyślna</button>
                 <button className="mini" onClick={() => setLane({ surface: '#b5423a' })}>czerwona</button>
+                <button className="mini" onClick={() => setLane({ surface: '#5b8a3c' })}>trawa</button>
               </span>
             </div>
-            <div className="prop"><span>Linia lewa</span>{edgeSelect(obj.spec.edgeLeft, (d) => setSpec({ edgeLeft: d }))}</div>
-            <div className="prop"><span>Linia prawa</span>{edgeSelect(obj.spec.edgeRight, (d) => setSpec({ edgeRight: d }))}</div>
-            <div className="hint">Lewa / prawa — patrząc w kierunku rysowania. Linię między dwoma pasami ustaw na jednym z nich.</div>
+          </Section>
+          <Section title="Oznakowanie na pasie">
+            <div className="prop"><span>Znak</span>
+              <select value={marking} onChange={(e) => setLane({ marking: e.target.value as LaneMarking })}>
+                {LANE_MARKINGS.map((m) => <option key={m} value={m}>{LANE_MARKING_LABEL[m]}</option>)}
+              </select>
+            </div>
+            {REPEATED.includes(marking) && (
+              <>
+                <div className="prop"><span>Odstęp</span><NumberInput value={lane.markGap ?? (marking === 'p22' ? 30 : 15)} step={5} min={0} suffix="m" onChange={(v) => setLane({ markGap: v })} title="Odległość między kolejnymi znakami (15 m w terenie zabudowanym, 30 m poza)" /></div>
+                <div className="prop"><span>Liczba</span><NumberInput value={lane.markCount ?? 3} step={1} min={0} decimals={0} suffix="szt." onChange={(v) => setLane({ markCount: Math.round(v) })} title="Ile znaków od końca pasa (0 = na całej długości)" /></div>
+              </>
+            )}
+            <div className="prop"><span>Linia lewa</span><LineCodeSelect value={obj.spec.edgeLeft} onPick={(d) => setSpec({ edgeLeft: d })} /></div>
+            <div className="prop"><span>Linia prawa</span><LineCodeSelect value={obj.spec.edgeRight} onPick={(d) => setSpec({ edgeRight: d })} /></div>
+            <div className="hint">Lewa / prawa — patrząc w kierunku rysowania. Linie między pasami i przez skrzyżowanie wygodniej rysować narzędziem Oznakowanie (K).</div>
           </Section>
           <Section title="Dodaj pas obok">
             <select value={tpl} onChange={(e) => setTpl(e.target.value)}>
@@ -217,15 +264,16 @@ function LinePanel({ obj }: { obj: LineObj }) {
   const set = (patch: Partial<LineObj>) => upd(obj.id, patch);
   const v = obj.variant ?? 'plain';
   const area = ['hatch', 'grass', 'pavement', 'asphalt'].includes(v);
+  const spec: LineSpec = { style: obj.style, width: obj.width, dash: obj.dash, color: obj.color };
   return (
     <>
       <PathOps obj={obj} />
-      <Section title="Znak / kształt">
+      <Section title={area ? 'Nawierzchnia / obszar' : 'Znak poziomy'}>
         <div className="prop"><span>Rodzaj</span>
           <select value={v} onChange={(e) => { const nv = e.target.value as LineObj['variant']; set({ variant: nv, path: ['hatch', 'grass', 'pavement', 'asphalt'].includes(nv) ? { ...obj.path, closed: true } : obj.path }); }}>
             <option value="plain">linia / wielokąt</option>
-            <option value="crosswalk">P-10 przejście (zebra)</option>
-            <option value="bikeCrossing">P-11 przejazd rowerowy</option>
+            <option value="crosswalk">P-10 przejście dla pieszych</option>
+            <option value="bikeCrossing">P-11 przejazd dla rowerzystów</option>
             <option value="zigzag">P-17 linia przystankowa</option>
             <option value="hatch">P-21 powierzchnia wyłączona</option>
             <option value="curb">krawężnik</option>
@@ -234,24 +282,28 @@ function LinePanel({ obj }: { obj: LineObj }) {
             <option value="grass">trawnik (wielokąt)</option>
           </select>
         </div>
-        {v !== 'asphalt' && v !== 'grass' && v !== 'pavement' && (
-          <div className="prop"><span>{v === 'crosswalk' || v === 'bikeCrossing' || v === 'zigzag' ? 'Szerokość' : 'Grubość'}</span><NumberInput value={obj.width} step={0.05} min={0} suffix="m" onChange={(w) => set({ width: w })} /></div>
-        )}
         {v === 'plain' && (
-          <div className="prop"><span>Styl</span>
-            <select value={obj.style} onChange={(e) => set({ style: e.target.value as LineObj['style'] })}>
-              {LINE_STYLES.map((s) => <option key={s} value={s}>{LINE_STYLE_LABEL[s]}</option>)}
-            </select>
+          <div className="prop"><span>Linia</span>
+            <LineCodeSelect value={obj.style === 'none' ? undefined : spec} onPick={(d) => (d ? set({ style: d.style, width: d.width, dash: d.dash, color: d.color, code: codeOfSpec(d) }) : set({ style: 'none' }))} />
           </div>
         )}
-        {!area && <div className="prop"><span>Kolor</span><span className="row-inline"><input type="color" value={obj.color} onChange={(e) => set({ color: e.target.value })} /><button onClick={() => set({ color: '#f4f4f4' })}>biały</button><button onClick={() => set({ color: '#f2c230' })}>żółty</button></span></div>}
+        {v === 'plain' && obj.style !== 'none' && (
+          <LineSpecFields value={spec} onChange={(d) => set({ style: d.style, width: d.width, dash: d.dash, color: d.color, code: codeOfSpec(d) })} />
+        )}
+        {(v === 'crosswalk' || v === 'bikeCrossing' || v === 'zigzag') && (
+          <div className="prop"><span>{v === 'zigzag' ? 'Amplituda' : 'Szerokość'}</span><NumberInput value={obj.width} step={0.1} min={0.1} suffix="m" onChange={(w) => set({ width: w })} /></div>
+        )}
+        {v === 'curb' && <div className="prop"><span>Grubość</span><NumberInput value={obj.width} step={0.05} min={0.05} suffix="m" onChange={(w) => set({ width: w })} /></div>}
+        {(v === 'crosswalk' || v === 'bikeCrossing' || v === 'zigzag' || v === 'hatch' || v === 'curb') && (
+          <div className="prop"><span>Kolor</span><span className="row-inline"><input type="color" value={obj.color} onChange={(e) => set({ color: e.target.value })} /><button className="mini" onClick={() => set({ color: WHITE })}>biały</button><button className="mini" onClick={() => set({ color: YELLOW })}>żółty</button></span></div>
+        )}
         {(obj.path.closed || area || v === 'crosswalk' || v === 'bikeCrossing') && (
           <div className="prop"><span>Wypełnienie</span>
             <span className="row-inline">
               <input type="color" value={obj.fill ?? '#3a3d42'} onChange={(e) => set({ fill: e.target.value })} />
-              <button onClick={() => set({ fill: undefined })}>brak</button>
-              <button onClick={() => set({ fill: '#3a3d42' })}>asfalt</button>
-              <button onClick={() => set({ fill: '#b5423a' })}>czerw.</button>
+              <button className="mini" onClick={() => set({ fill: undefined })}>brak</button>
+              <button className="mini" onClick={() => set({ fill: '#3a3d42' })}>asfalt</button>
+              <button className="mini" onClick={() => set({ fill: '#b5423a' })}>czerw.</button>
             </span>
           </div>
         )}
@@ -292,7 +344,7 @@ function TextPanel({ obj }: { obj: TextObj }) {
       <div className="prop"><span>Wydłużenie</span><NumberInput value={obj.stretch} step={0.1} min={0.5} max={6} onChange={(v) => set({ stretch: v })} /></div>
       <div className="prop"><span>Kolor</span><input type="color" value={obj.color} onChange={(e) => set({ color: e.target.value })} /></div>
       <div className="prop"><span>Tło</span><span className="row-inline"><input type="color" value={obj.background ?? '#000000'} onChange={(e) => set({ background: e.target.value })} /><button onClick={() => set({ background: undefined })}>brak</button></span></div>
-      <div className="hint">Napisy na jezdni (P-16 STOP, P-22 BUS) są wydłużone ~2,5× w kierunku jazdy.</div>
+      <div className="hint">Napisy na jezdni (P-16 STOP, P-22 BUS) mają litery 1,6 m i są wydłużone w kierunku jazdy.</div>
     </Section>
   );
 }
@@ -312,22 +364,51 @@ export function Inspector({ measured, onCalibrate }: Props) {
   const upd = useProject((s) => s.updateObjects);
   const remove = useProject((s) => s.removeObjects);
   const dup = useProject((s) => s.duplicateObjects);
-  const reorder = useProject((s) => s.reorder);
   const setMeta = useProject((s) => s.setProjectMeta);
   const setBackground = useProject((s) => s.setBackground);
   const group = useProject((s) => s.group);
   const ungroup = useProject((s) => s.ungroup);
   const mergeObjects = useProject((s) => s.mergeObjects);
   const pending = useProject((s) => s.pending);
+  const markCurve = useProject((s) => s.markCurve);
+  const toggleMarkCurve = useProject((s) => s.toggleMarkCurve);
   const [real, setReal] = useState(0);
 
-  if (tool === 'join') {
+  if (tool === 'link') {
     return (
       <div className="inspector">
-        <Section title="Łączenie pasów">
-          <p className="hint">Kliknij kropkę na końcu jednego pasa, potem na końcu drugiego — powstanie jeden ciągły pas z płynnym łukiem. Nachodzące końce zostaną lekko przycięte. Kliknięcie drugiego końca tego samego pasa zamyka go w pętlę. Esc anuluje wybór.</p>
-          <p className="hint"><strong>Włączenie w bok (klin):</strong> po kliknięciu kropki na końcu pasa kliknij w sam pas, do którego ma się włączyć — w miejscu, gdzie włączenie ma się skończyć. Krawędź od strony tamtego pasa przylega do niego, druga schodzi łukiem, a pas zwęża się do zera (ze strzałką P-9). Klin jest grupowany z pasem.</p>
-          <p className="hint">Łączy się pas z pasem i linię z linią. Wynik przejmuje rodzaj i szerokość pierwszego klikniętego pasa.</p>
+        <Section title="Łącznik (J)">
+          <p className="hint">Kliknij kropkę na końcu jednego pasa, potem kropkę na końcu drugiego — powstanie <strong>osobny segment</strong> łączący oba końce łukiem stycznym do obu pasów. Pasy nie są zmieniane ani scalane; łącznik ma rodzaj i nawierzchnię pierwszego pasa, a gdy drugi jest innej szerokości — płynnie zwęża się do niego.</p>
+          <p className="hint">Styk dwóch pasów pod kątem jest automatycznie wypełniany zaokrągleniem, więc na zewnątrz zakrętu nie brakuje asfaltu.</p>
+          <p className="hint"><strong>Włączenie w bok (klin):</strong> po kliknięciu kropki kliknij w sam pas, do którego ma się włączyć — pas zwęży się do zera ze strzałką P-9.</p>
+          <p className="hint">Łączy się pas z pasem i linię z linią. Esc anuluje wybór. Scalanie kawałków w jeden obiekt jest w menu prawego przycisku.</p>
+        </Section>
+      </div>
+    );
+  }
+
+  if (tool === 'mark') {
+    const name = pending && pending.category === 'Oznakowanie' ? pending.name : 'P-1b linia pojedyncza przerywana – krótka';
+    const laneMode = pending?.template.kind === 'laneMarking';
+    return (
+      <div className="inspector">
+        <Section title="Oznakowanie (K)">
+          <div className="hint">Wybrany znak: <strong>{name}</strong></div>
+          {laneMode ? (
+            <p className="hint">Kliknij pas, na którym ma się znaleźć ten znak. Strzałki i napisy ustawiają się na osi pasa, od końca w kierunku jazdy (odstęp i liczbę zmienisz w panelu pasa).</p>
+          ) : (
+            <>
+              <p className="hint">Na krawędziach pasów pojawiają się kropki. Kliknij punkt początkowy, potem końcowy:</p>
+              <p className="hint">• dwa punkty na <strong>tej samej krawędzi</strong> — linia biegnie po tej krawędzi (np. P-2a na ostatnich 20 m przed skrzyżowaniem, P-1b wcześniej),<br />• punkty na <strong>dwóch różnych krawędziach</strong> — płynny łuk styczny do obu (prowadzenie pasa przez skrzyżowanie, P-1d / P-1e),<br />• dowolne miejsce — zwykły punkt.</p>
+              <div className="prop"><span>Między krawędziami</span>
+                <span className="seg">
+                  <button className={markCurve ? 'on' : ''} onClick={() => { if (!markCurve) toggleMarkCurve(); }}>łuk</button>
+                  <button className={!markCurve ? 'on' : ''} onClick={() => { if (markCurve) toggleMarkCurve(); }}>prosto</button>
+                </span>
+              </div>
+              <p className="hint">Przejścia (P-10, P-11) i linie zatrzymania rysuj od krawędzi do krawędzi w poprzek jezdni. Esc anuluje pierwszy punkt.</p>
+            </>
+          )}
         </Section>
       </div>
     );
@@ -352,10 +433,13 @@ export function Inspector({ measured, onCalibrate }: Props) {
       <div className="inspector">
         {drawing && (
           <Section title="Rysowanie">
-            <div className="hint">Element: <strong>{pending?.name ?? (tool === 'rect' || tool === 'ellipse' || tool === 'polygon' ? 'Nawierzchnia asfaltowa' : 'P-2 linia ciągła')}</strong></div>
+            <div className="hint">Element: <strong>{pending && pending.template.kind !== 'laneMarking' ? pending.name : tool === 'rect' || tool === 'ellipse' || tool === 'polygon' ? 'Nawierzchnia asfaltowa' : 'P-2a linia ciągła'}</strong></div>
             <div className="hint">{tool === 'pen' ? 'Klik = punkt. Przeciągnięcie = przesuwanie mapy. Alt+przeciągnięcie = punkt gładki (łuk). Klik w pierwszy punkt zamyka, w ostatni / Enter kończy. Ctrl+Z / Backspace = cofnij punkt. Shift = kąty co 15°.' : tool === 'polygon' ? 'Klik = wierzchołek. Przeciągnięcie = przesuwanie mapy. Alt+przeciągnięcie = wierzchołek gładki. Enter lub klik w pierwszy punkt zamyka wielokąt.' : 'Przeciągnij, by narysować. Shift = proporcje 1:1 / kąty co 15°.'}</div>
           </Section>
         )}
+        <Section title="Kolejność warstw">
+          <div className="hint">Stała, wg kategorii: {([0, 1, 2, 3, 4, 5, 6] as const).map((r) => RANK_LABEL[r]).join(' → ')}. Najpierw rysujesz nawierzchnię i pasy, na końcu oznakowanie — ono zawsze leży na wierzchu, a tory tramwajowe na jezdni i przejściach stają się przejazdem na płytach.</div>
+        </Section>
         <Section title="Projekt">
           <div className="prop"><span>Nazwa</span><input type="text" value={project.name} onChange={(e) => setMeta({ name: e.target.value })} /></div>
           <div className="prop"><span>Plansza</span><span className="pair">
@@ -377,10 +461,10 @@ export function Inspector({ measured, onCalibrate }: Props) {
             <kbd>V</kbd><span>zaznaczanie</span><kbd>H / Spacja</kbd><span>rączka</span>
             <kbd>P</kbd><span>pióro</span><kbd>W</kbd><span>wielokąt</span><kbd>L</kbd><span>linia</span>
             <kbd>R</kbd><span>prostokąt</span><kbd>O</kbd><span>elipsa</span>
-            <kbd>J</kbd><span>łącz pasy</span><kbd>T</kbd><span>tekst</span><kbd>M</kbd><span>pomiar</span>
+            <kbd>J</kbd><span>łącznik</span><kbd>K</kbd><span>oznakowanie</span><kbd>T</kbd><span>tekst</span><kbd>M</kbd><span>pomiar</span>
             <kbd>⏎</kbd><span>edycja węzłów</span><kbd>Esc</kbd><span>zakończ / odznacz</span>
             <kbd>Ctrl+D</kbd><span>duplikuj</span><kbd>Ctrl+Z / Y</kbd><span>cofnij / ponów</span>
-            <kbd>Ctrl+[ ]</kbd><span>kolejność (+Shift: spód/wierzch)</span><kbd>Ctrl+Shift+L</kbd><span>zablokuj</span>
+            <kbd>Ctrl+[ ]</kbd><span>kolejność w obrębie kategorii</span><kbd>Ctrl+Shift+L</kbd><span>zablokuj</span>
             <kbd>Shift+R</kbd><span>obróć symbol 90°</span><kbd>Shift+H</kbd><span>odbij symbol</span>
             <kbd>Shift+1 / 2 / 0</kbd><span>dopasuj / do zaznaczenia / 100%</span><kbd>Ctrl+kółko</kbd><span>zoom</span>
           </div>
@@ -402,14 +486,7 @@ export function Inspector({ measured, onCalibrate }: Props) {
         <button className="icon" title="Duplikuj (Ctrl+D)" onClick={() => dup(objs.map((o) => o.id))}><Copy size={14} /></button>
         <button className="icon danger" title="Usuń (Del)" onClick={() => remove(objs.map((o) => o.id))}><Trash2 size={14} /></button>
       </div>
-      <Section title="Pozycja" right={
-        <span className="row-inline">
-          <button className="icon" title="Na wierzch" onClick={() => reorder(objs.map((o) => o.id), 'top')}><ChevronsUp size={13} /></button>
-          <button className="icon" title="Wyżej" onClick={() => reorder(objs.map((o) => o.id), 'up')}><ArrowUp size={13} /></button>
-          <button className="icon" title="Niżej" onClick={() => reorder(objs.map((o) => o.id), 'down')}><ArrowDown size={13} /></button>
-          <button className="icon" title="Na spód" onClick={() => reorder(objs.map((o) => o.id), 'bottom')}><ChevronsDown size={13} /></button>
-        </span>
-      }>
+      <Section title="Pozycja" right={one ? <span className="hint">{RANK_LABEL[objectRank(one)]}</span> : undefined}>
         {one && (
           <div className="prop"><span>X / Y</span><span className="pair">
             <NumberInput value={one.x} step={0.5} suffix="X" onChange={(x) => upd([{ id: one.id, patch: { x } }])} />
@@ -428,7 +505,7 @@ export function Inspector({ measured, onCalibrate }: Props) {
           {(() => {
             const ps = objs.filter((o) => (o.type === 'strip' || o.type === 'line') && !o.path.closed) as PathObj[];
             if (ps.length < 2 || !ps.every((o) => o.type === ps[0].type)) return null;
-            return <button className="primary" onClick={() => { const r = mergeChain(ps); if (r) mergeObjects(r.merged, r.removed); }} title="Łączy kawałki w jeden ciągły pas płynnymi łukami między najbliższymi końcami">Połącz w jeden pas</button>;
+            return <button onClick={() => { const r = mergeChain(ps); if (r) mergeObjects(r.merged, r.removed); }} title="Łączy kawałki w jeden ciągły obiekt łukami między najbliższymi końcami (zwykle lepszy jest łącznik J, który zostawia pasy osobno)">Scal w jeden obiekt</button>;
           })()}
           {objs.some((o) => o.type === 'strip' || o.type === 'line') && <div className="hint">Przeciągnij uchwyt na końcu dowolnego pasa — pozostałe zaznaczone pasy wydłużą się lub skrócą po tej samej stronie o tyle samo.</div>}
         </Section>
@@ -440,3 +517,4 @@ export function Inspector({ measured, onCalibrate }: Props) {
     </div>
   );
 }
+
