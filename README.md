@@ -50,8 +50,10 @@ z jezdnią, placem asfaltowym lub przejściem, rysują się jako przejazd tramwa
    - przejścia P-10 / P-11 i linie zatrzymania P-12 / P-13 / P-14 rysujesz tak samo, od krawędzi do krawędzi
      w poprzek jezdni;
    - znaki „na pasie” (strzałki P-8a–i, P-9a/b, napis BUS, P-23 rower, stanowiska P-18, szrafura P-21):
-     wybierz w bibliotece i **kliknij pas** — znak układa się na osi pasa od końca w kierunku jazdy, co 15 m
-     (BUS co 30 m); odstęp i liczbę zmienisz w panelu pasa, tam też ustawisz linię na lewej / prawej krawędzi.
+     wybierz w bibliotece i **kliknij pas** — znak układa się na osi pasa i powtarza na całej jego długości,
+     licząc od końca w kierunku jazdy, domyślnie co 15 m (BUS co 30 m). W panelu pasa zmienisz „Powtarzaj co”
+     (szybkie 5 / 10 / 15 / 20 / 30 m) i zakres: cały pas albo tylko N znaków przy końcu; tam też ustawisz linię
+     na lewej / prawej krawędzi.
 5. **Edycja jak w Figmie**: zaznaczona ścieżka ma uchwyty końców (skracanie / wydłużanie), `Enter` / 2× klik =
    edycja węzłów, prawy przycisk → Przetnij tutaj, grupy Ctrl+G, wspólne wydłużanie kilku pasów.
 6. **Zapis**: autozapis w przeglądarce (localStorage / IndexedDB), plik `.bzrd.json` (pliki V1/V2 są migrowane),

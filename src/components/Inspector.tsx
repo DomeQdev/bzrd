@@ -13,7 +13,7 @@ import { mergeChain, type PathObj } from '../lib/merge';
 import { Copy, FlipHorizontal2, Lock, LockOpen, Trash2 } from 'lucide-react';
 import { formatLength } from '../model/units';
 import { flatten } from '../canvas/path';
-import { RANK_LABEL, objectRank } from '../canvas/draw';
+import { RANK_LABEL, defaultMarkGap, objectRank } from '../canvas/draw';
 
 const LINE_STYLES = Object.keys(LINE_STYLE_LABEL) as LineSpec['style'][];
 const LANE_KINDS = Object.keys(LANE_KIND_LABEL) as LaneKind[];
@@ -233,12 +233,25 @@ function StripPanel({ obj }: { obj: StripObj }) {
                 {LANE_MARKINGS.map((m) => <option key={m} value={m}>{LANE_MARKING_LABEL[m]}</option>)}
               </select>
             </div>
-            {REPEATED.includes(marking) && (
-              <>
-                <div className="prop"><span>Odstęp</span><NumberInput value={lane.markGap ?? (marking === 'p22' ? 30 : 15)} step={5} min={0} suffix="m" onChange={(v) => setLane({ markGap: v })} title="Odległość między kolejnymi znakami (15 m w terenie zabudowanym, 30 m poza)" /></div>
-                <div className="prop"><span>Liczba</span><NumberInput value={lane.markCount ?? 3} step={1} min={0} decimals={0} suffix="szt." onChange={(v) => setLane({ markCount: Math.round(v) })} title="Ile znaków od końca pasa (0 = na całej długości)" /></div>
-              </>
-            )}
+            {REPEATED.includes(marking) && (() => {
+              const gap = lane.markGap ?? defaultMarkGap(marking);
+              const all = !lane.markCount;
+              return (
+                <>
+                  <div className="prop"><span>Powtarzaj co</span><NumberInput value={gap} step={1} min={1} suffix="m" onChange={(v) => setLane({ markGap: Math.max(1, v) })} title="Odległość między kolejnymi znakami, środek do środka (15 m w terenie zabudowanym, 30 m poza nim)" /></div>
+                  <div className="prop"><span></span><span className="row-inline">
+                    {[5, 10, 15, 20, 30].map((g) => <button key={g} className={`mini ${Math.abs(gap - g) < 1e-6 ? 'on' : ''}`} onClick={() => setLane({ markGap: g })}>{g} m</button>)}
+                  </span></div>
+                  <div className="prop"><span>Zakres</span>
+                    <span className="seg">
+                      <button className={all ? 'on' : ''} onClick={() => setLane({ markCount: 0 })} title="Znaki powtarzają się na całej długości pasa">cały pas</button>
+                      <button className={!all ? 'on' : ''} onClick={() => setLane({ markCount: lane.markCount || 3 })} title="Tylko kilka znaków przed końcem pasa (np. przed skrzyżowaniem)">przy końcu</button>
+                    </span>
+                  </div>
+                  {!all && <div className="prop"><span>Liczba</span><NumberInput value={lane.markCount ?? 3} step={1} min={1} decimals={0} suffix="szt." onChange={(v) => setLane({ markCount: Math.max(1, Math.round(v)) })} title="Ile znaków od końca pasa, w kierunku jazdy" /></div>}
+                </>
+              );
+            })()}
             <div className="prop"><span>Linia lewa</span><LineCodeSelect value={obj.spec.edgeLeft} onPick={(d) => setSpec({ edgeLeft: d })} /></div>
             <div className="prop"><span>Linia prawa</span><LineCodeSelect value={obj.spec.edgeRight} onPick={(d) => setSpec({ edgeRight: d })} /></div>
             <div className="hint">Lewa / prawa — patrząc w kierunku rysowania. Linie między pasami i przez skrzyżowanie wygodniej rysować narzędziem Oznakowanie (K).</div>
@@ -395,7 +408,7 @@ export function Inspector({ measured, onCalibrate }: Props) {
         <Section title="Oznakowanie (K)">
           <div className="hint">Wybrany znak: <strong>{name}</strong></div>
           {laneMode ? (
-            <p className="hint">Kliknij pas, na którym ma się znaleźć ten znak. Strzałki i napisy ustawiają się na osi pasa, od końca w kierunku jazdy (odstęp i liczbę zmienisz w panelu pasa).</p>
+            <p className="hint">Kliknij pas, na którym ma się znaleźć ten znak. Strzałki, rowery i napisy ustawiają się na osi pasa i powtarzają na całej jego długości, licząc od końca w kierunku jazdy. Co ile metrów (albo tylko kilka przy końcu pasa) ustawisz w panelu pasa.</p>
           ) : (
             <>
               <p className="hint">Na krawędziach pasów pojawiają się kropki. Kliknij punkt początkowy, potem końcowy:</p>

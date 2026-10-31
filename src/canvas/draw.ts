@@ -410,10 +410,19 @@ const ARROW: Partial<Record<LaneMarking, PictoId>> = {
   p8a: 'p8a', p8b: 'p8b', p8c: 'p8c', p8d: 'p8d', p8e: 'p8e', p8f: 'p8f', p8g: 'p8g', p8h: 'p8h', p8i: 'p8i', p9a: 'p9a', p9b: 'p9b',
 };
 
-/** Centre positions (arc length) of repeated glyphs, counted from the exit end of the lane. */
-function glyphPositions(lane: Lane, L: number, glyphLen: number, defaultGap: number): number[] {
-  const gap = lane.markGap ?? defaultGap;
-  const count = lane.markCount ?? 3;
+/** Default distance between repeated glyphs (m, centre to centre). */
+export function defaultMarkGap(marking: LaneMarking): number {
+  return marking === 'p22' ? 30 : 15;
+}
+
+/**
+ * Centre positions (arc length) of repeated glyphs, counted from the exit end of the lane (the end the traffic
+ * drives toward). `markCount` 0 / unset = repeated along the whole lane; N = only the last N before the exit.
+ */
+function glyphPositions(lane: Lane, L: number, glyphLen: number, marking: LaneMarking): number[] {
+  // never closer than the glyph itself + 0.5 m, so they cannot overlap
+  const gap = Math.max(glyphLen + 0.5, lane.markGap ?? defaultMarkGap(marking));
+  const count = lane.markCount ?? 0;
   const margin = glyphLen / 2 + 1.0;
   const out: number[] = [];
   if (L < glyphLen + 1) return out;
@@ -422,7 +431,6 @@ function glyphPositions(lane: Lane, L: number, glyphLen: number, defaultGap: num
     const s = exitEnd ? L - margin - k * gap : margin + k * gap;
     if (s < glyphLen / 2 || s > L - glyphLen / 2) break;
     out.push(s);
-    if (gap <= 0) break;
   }
   return out;
 }
@@ -521,7 +529,7 @@ function drawBandMarking(ctx: Ctx, lay: StripLayout, band: LaneBand) {
   if (marking === 'p23') {
     const h = Math.min(1.9, Math.max(0.6, nominal - 0.5)); // P-23 ≈ 1,9 m long
     const mini = lane.kind === 'bike' || lane.kind === 'bikePath';
-    for (const s of glyphPositions(lane, L, mini ? h + 3 : h, 15)) {
+    for (const s of glyphPositions(lane, L, mini ? h + 3 : h, marking)) {
       const f = glyphFrame(lay, band, s);
       if (!f) continue;
       const fx = Math.cos(f.heading), fy = Math.sin(f.heading);
@@ -540,7 +548,7 @@ function drawBandMarking(ctx: Ctx, lay: StripLayout, band: LaneBand) {
   }
 
   if (marking === 'p22') {
-    for (const s of glyphPositions(lane, L, 1.6, 30)) {
+    for (const s of glyphPositions(lane, L, 1.6, marking)) {
       const f = glyphFrame(lay, band, s);
       if (!f) continue;
       drawTextM(ctx, 'BUS', f.x, f.y, 1.6, { rotate: f.heading + Math.PI / 2, weight: '700', family: 'Arial Narrow, Arial, sans-serif', maxWidth: Math.min(1.62, Math.max(0.5, f.width - 0.4)) });
@@ -551,7 +559,7 @@ function drawBandMarking(ctx: Ctx, lay: StripLayout, band: LaneBand) {
   const picto = ARROW[marking];
   if (picto) {
     const len = Math.min(5, L * 0.4);
-    for (const s of glyphPositions(lane, L, len, 15)) {
+    for (const s of glyphPositions(lane, L, len, marking)) {
       const f = glyphFrame(lay, band, s);
       if (!f) continue;
       ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.heading);
