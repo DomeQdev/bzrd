@@ -411,15 +411,16 @@ export function Inspector({ measured, onCalibrate }: Props) {
             <p className="hint">Kliknij pas, na którym ma się znaleźć ten znak. Strzałki, rowery i napisy ustawiają się na osi pasa i powtarzają na całej jego długości, licząc od końca w kierunku jazdy. Co ile metrów (albo tylko kilka przy końcu pasa) ustawisz w panelu pasa.</p>
           ) : (
             <>
-              <p className="hint">Na krawędziach pasów pojawiają się kropki. Kliknij punkt początkowy, potem końcowy:</p>
-              <p className="hint">• dwa punkty na <strong>tej samej krawędzi</strong> — linia biegnie po tej krawędzi (np. P-2a na ostatnich 20 m przed skrzyżowaniem, P-1b wcześniej),<br />• punkty na <strong>dwóch różnych krawędziach</strong> — płynny łuk styczny do obu (prowadzenie pasa przez skrzyżowanie, P-1d / P-1e),<br />• dowolne miejsce — zwykły punkt.</p>
+              <p className="hint">Rysujesz jak piórem: <strong>klik = punkt</strong>, <strong>przeciągnięcie = przesuwanie mapy</strong>, klik w ostatni punkt lub Enter kończy linię (narzędzie zostaje włączone), Backspace / Ctrl+Z cofa punkt, Alt+przeciągnięcie = punkt z łukiem, Shift = kąty co 15°.</p>
+              <p className="hint">Kropki na krawędziach pasów przyciągają punkty:</p>
+              <p className="hint">• kolejne punkty na <strong>tej samej krawędzi</strong> — linia biegnie po tej krawędzi (np. P-2a na ostatnich 20 m przed skrzyżowaniem, P-1b wcześniej),<br />• kolejne punkty na <strong>dwóch różnych krawędziach</strong> — płynny łuk styczny do obu (prowadzenie pasa przez skrzyżowanie, P-1d / P-1e),<br />• dowolne miejsce — zwykły punkt.</p>
               <div className="prop"><span>Między krawędziami</span>
                 <span className="seg">
                   <button className={markCurve ? 'on' : ''} onClick={() => { if (!markCurve) toggleMarkCurve(); }}>łuk</button>
                   <button className={!markCurve ? 'on' : ''} onClick={() => { if (markCurve) toggleMarkCurve(); }}>prosto</button>
                 </span>
               </div>
-              <p className="hint">Przejścia (P-10, P-11) i linie zatrzymania rysuj od krawędzi do krawędzi w poprzek jezdni. Esc anuluje pierwszy punkt.</p>
+              <p className="hint">Przejścia (P-10, P-11) i linie zatrzymania rysuj od krawędzi do krawędzi w poprzek jezdni. Esc kończy linię i wyłącza narzędzie.</p>
             </>
           )}
         </Section>

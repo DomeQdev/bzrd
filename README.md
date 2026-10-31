@@ -40,12 +40,13 @@ z jezdnią, placem asfaltowym lub przejściem, rysują się jako przejazd tramwa
    asfaltu. Klik kropki, a potem w sam pas = włączenie w bok (klin ze strzałką P-9). Scalanie kawałków w jeden
    obiekt zostało w menu prawego przycisku.
 4. **Krok 2 — Oznakowanie (K)**, jak w modzie *Intersection Marking Tool* do Cities: Skylines:
-   - na krawędziach pasów pojawiają się kropki (końce krawędzi; najechanie na krawędź daje punkt w dowolnym
-     miejscu). Dwa kliknięcia = linia:
-     - oba punkty na **tej samej krawędzi** → linia biegnie po krawędzi między nimi (np. P-2a na ostatnich 20 m
-       przed skrzyżowaniem, P-1b wcześniej),
-     - punkty na **dwóch różnych krawędziach** → płynny łuk styczny do obu (prowadzenie pasa przez skrzyżowanie
-       P-1d / P-1e; przełącznik łuk / prosto w panelu),
+   - rysujesz jak piórem: klik = punkt, przeciągnięcie = przesuwanie mapy, klik w ostatni punkt lub Enter kończy
+     linię (narzędzie zostaje włączone), Backspace / Ctrl+Z cofa punkt, Alt+przeciągnięcie = łuk, Shift = 15°;
+   - kropki na końcach krawędzi pasów przyciągają punkty (najechanie na krawędź daje punkt w dowolnym jej miejscu):
+     - kolejne punkty na **tej samej krawędzi** → linia biegnie po krawędzi między nimi (np. P-2a na ostatnich
+       20 m przed skrzyżowaniem, P-1b wcześniej),
+     - kolejne punkty na **dwóch różnych krawędziach** → płynny łuk styczny do obu (prowadzenie pasa przez
+       skrzyżowanie P-1d / P-1e; przełącznik łuk / prosto w panelu),
      - punkt poza krawędzią → zwykły punkt;
    - przejścia P-10 / P-11 i linie zatrzymania P-12 / P-13 / P-14 rysujesz tak samo, od krawędzi do krawędzi
      w poprzek jezdni;

@@ -44,38 +44,35 @@ function isEditableTarget(t: EventTarget | null) {
 
 const DEFAULT_TEMPLATE: Record<string, string> = { pen: 'mk-p2a', polygon: 'mk-asphalt', line: 'mk-p2a', rect: 'mk-asphalt', ellipse: 'mk-asphalt', mark: 'mk-p1b' };
 
-/** A point picked with the marking tool: free, or on an edge (then we know the edge and where on it). */
-interface MarkPick { x: number; y: number; poly?: Polyline; param?: number }
-
 /**
- * Line between two marking-tool picks (Intersection-Marking-Tool style):
- *  - both on the same edge → the line follows that edge between them,
- *  - on two different edges → a smooth curve tangent to both edges (or straight when `curve` is off),
- *  - free points → straight.
+ * Marking tool (Intersection-Marking-Tool style), applied to the pen draft: between two consecutive points that sit
+ * on two DIFFERENT strip edges the segment becomes a smooth curve tangent to both edges (lane guidance through an
+ * intersection). Points on the SAME edge are handled by traceNodes (the line follows the edge).
  */
-function markPath(a: MarkPick, b: MarkPick, curve: boolean): PathData {
-  const A: PathNode = { x: a.x, y: a.y, mode: 'corner' };
-  const B: PathNode = { x: b.x, y: b.y, mode: 'corner' };
-  if (a.poly && a.poly === b.poly && a.param !== undefined && b.param !== undefined) {
-    const mid = traceBetween(a.poly, a.param, b.param, 0).map((p) => ({ x: p.x, y: p.y, mode: 'corner' as const }));
-    return { closed: false, nodes: [A, ...mid, B] };
-  }
-  if (!curve) return { closed: false, nodes: [A, B] };
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const D = Math.hypot(dx, dy);
-  if (D < 0.05) return { closed: false, nodes: [A, B] };
-  const h = D / 3;
-  const dir = (pk: MarkPick, toward: Vec2): Vec2 | null => {
-    if (!pk.poly || pk.param === undefined) return null;
-    const t = pointAt(pk.poly, pk.param);
-    const sgn = t.tx * (toward.x - pk.x) + t.ty * (toward.y - pk.y) >= 0 ? 1 : -1;
+function curveBetweenEdges(nodes: PathNode[], snaps: Array<SnapResult | null | undefined>, closed: boolean): PathNode[] {
+  const out = nodes.map((n) => ({ ...n }));
+  const n = out.length;
+  const segs = closed ? n : n - 1;
+  const toward = (pl: Polyline, param: number, from: Vec2, to: Vec2): Vec2 => {
+    const t = pointAt(pl, param);
+    const sgn = t.tx * (to.x - from.x) + t.ty * (to.y - from.y) >= 0 ? 1 : -1;
     return { x: t.tx * sgn, y: t.ty * sgn };
   };
-  const tA = dir(a, b);           // leaves A heading toward B
-  const tB = dir(b, a);           // at B, pointing back toward A
-  if (tA) { A.hOut = { x: a.x + tA.x * h, y: a.y + tA.y * h }; A.mode = 'smooth'; }
-  if (tB) { B.hIn = { x: b.x + tB.x * h, y: b.y + tB.y * h }; B.mode = 'smooth'; }
-  return { closed: false, nodes: [A, B] };
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n;
+    const a = snaps[i], b = snaps[j];
+    if (!a?.poly || !b?.poly || a.poly.role !== 'edge' || b.poly.role !== 'edge' || a.poly === b.poly) continue;
+    if (a.param === undefined || b.param === undefined || out[i].hOut || out[j].hIn) continue;
+    const A = out[i], B = out[j];
+    const D = Math.hypot(B.x - A.x, B.y - A.y);
+    if (D < 0.05) continue;
+    const h = D / 3;
+    const tA = toward(a.poly, a.param, A, B);
+    const tB = toward(b.poly, b.param, B, A);
+    A.hOut = { x: A.x + tA.x * h, y: A.y + tA.y * h };
+    B.hIn = { x: B.x + tB.x * h, y: B.y + tB.y * h };
+  }
+  return out;
 }
 
 let clipboard: BzObject[] = [];
@@ -139,8 +136,6 @@ export function Board({ onReady, onMeasure }: Props) {
   const [joinHover, setJoinHover] = useState<{ id: string; atStart: boolean } | null>(null);
   /** join tool: lane body under the cursor (merge INTO its side) */
   const [joinBody, setJoinBody] = useState<{ id: string; w: Vec2 } | null>(null);
-  // marking tool: first picked point
-  const [markPick, setMarkPick] = useState<MarkPick | null>(null);
   const markCurve = useProject((s) => s.markCurve);
   const dragStartRef = useRef<{ id: string; items: Map<string, Vec2>; box: { x0: number; y0: number; x1: number; y1: number }; alt: boolean; samples: Vec2[] } | null>(null);
   const transformBatch = useRef<Array<{ id: string; patch: Partial<BzObject> }>>([]);
@@ -214,7 +209,7 @@ export function Board({ onReady, onMeasure }: Props) {
   }, [project.objects, editing]);
   const dragTargets = useMemo(() => buildSnapTargets(project.objects, new Set(selection)), [project.objects, selection]);
 
-  const drawHalfWidth = useMemo(() => (pending?.template.kind === 'strip' ? specWidth(pending.template.spec.lanes) / 2 : 0), [pending]);
+  const drawHalfWidth = useMemo(() => (tool !== 'mark' && pending?.template.kind === 'strip' ? specWidth(pending.template.spec.lanes) / 2 : 0), [pending, tool]);
   /** Snap and return both the point and the snap info (edge + position) for tracing. */
   const snapFull = useCallback((p: Vec2, from?: Vec2 | null, useShift = true, half?: number): { p: Vec2; r: SnapResult | null } => {
     let q = p;
@@ -247,11 +242,12 @@ export function Board({ onReady, onMeasure }: Props) {
 
   // ─── template resolution
   const templateFor = useCallback((t: Tool): Preset | null => {
-    if (pending && pending.template.kind !== 'laneMarking') {
-      // the marking tool draws open lines: closed-only presets (P-21, areas) fall back to the default line
-      if (t === 'mark' && pending.template.kind === 'line' && pending.template.closedOnly) return presetById(DEFAULT_TEMPLATE.mark) ?? null;
-      return pending;
+    if (t === 'mark') {
+      // the marking tool draws open painted lines: strips, areas and P-21 fall back to the default line
+      if (pending?.template.kind === 'line' && !pending.template.closedOnly) return pending;
+      return presetById(DEFAULT_TEMPLATE.mark) ?? null;
     }
+    if (pending && pending.template.kind !== 'laneMarking') return pending;
     return presetById(DEFAULT_TEMPLATE[t] ?? 'mk-p2a') ?? null;
   }, [pending]);
 
@@ -272,10 +268,12 @@ export function Board({ onReady, onMeasure }: Props) {
     setSnapHint(null);
     if (nodes.length < 2) return;
     const close = closed || tool === 'polygon';
-    const clean = close ? nodes : nodes.map((n, i) => (i === nodes.length - 1 ? { ...n, hOut: undefined } : n));
-    const traced = traceNodes(clean, draftSnaps.slice(0, nodes.length), close, drawHalfWidth);
-    createFromPath({ nodes: traced, closed: close }, tool === 'polygon' ? 'polygon' : 'pen');
-  }, [draft, draftSnaps, createFromPath, tool, traceNodes, drawHalfWidth]);
+    const snaps = draftSnaps.slice(0, nodes.length);
+    let clean = close ? nodes : nodes.map((n, i) => (i === nodes.length - 1 ? { ...n, hOut: undefined } : n));
+    if (tool === 'mark' && markCurve) clean = curveBetweenEdges(clean, snaps, close);
+    const traced = traceNodes(clean, snaps, close, drawHalfWidth);
+    createFromPath({ nodes: traced, closed: close }, tool === 'polygon' ? 'polygon' : tool === 'mark' ? 'mark' : 'pen');
+  }, [draft, draftSnaps, createFromPath, tool, traceNodes, drawHalfWidth, markCurve]);
 
   // ─── wheel
   const onWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -358,11 +356,10 @@ export function Board({ onReady, onMeasure }: Props) {
         return;
       }
       if (e.key === 'Escape') {
-        if (draft.length) { if (draft.length >= 2) finishDraft(false); else { setDraft([]); setSnapHint(null); } s.setTool('select'); return; }
+        if (draft.length) { if (draft.length >= 2) finishDraft(false); else { setDraft([]); setSnapHint(null); } if (s.tool !== 'mark') s.setTool('select'); return; }
         if (shapeDraft) { setShapeDraft(null); return; }
         if (ctxMenu) { setCtxMenu(null); return; }
         if (joinPick) { setJoinPick(null); return; }
-        if (markPick) { setMarkPick(null); return; }
         if (measurePts.length) { setMeasurePts([]); onMeasure?.(null); return; }
         if (s.editing) { s.setEditing(null); return; }
         if (s.tool !== 'select') { s.setTool('select'); s.setPending(null); return; }
@@ -370,7 +367,7 @@ export function Board({ onReady, onMeasure }: Props) {
         return;
       }
       if (e.key === 'Enter') {
-        if (draft.length) { finishDraft(false); s.setTool('select'); return; }
+        if (draft.length) { finishDraft(false); if (s.tool !== 'mark') s.setTool('select'); return; }
         if (s.editing) { s.setEditing(null); return; }
         if (s.selection.length === 1) {
           const o = s.project!.objects.find((x) => x.id === s.selection[0]);
@@ -398,7 +395,7 @@ export function Board({ onReady, onMeasure }: Props) {
       if (e.shiftKey && k === 'h') { const objs = s.project!.objects.filter((o) => s.selection.includes(o.id) && o.type === 'symbol'); s.updateObjects(objs.map((o) => ({ id: o.id, patch: { flipX: !(o as { flipX?: boolean }).flipX } as Partial<BzObject> }))); return; }
       if (e.shiftKey) return;
       const toolKeys: Record<string, Tool> = { v: 'select', h: 'hand', p: 'pen', w: 'polygon', l: 'line', r: 'rect', o: 'ellipse', t: 'text', m: 'measure', j: 'link', k: 'mark' };
-      if (toolKeys[k]) { if (draft.length >= 2 && toolKeys[k] !== 'pen' && toolKeys[k] !== 'polygon') finishDraft(false); else if (draft.length) setDraft([]); setShapeDraft(null); s.setTool(toolKeys[k]); return; }
+      if (toolKeys[k]) { if (draft.length >= 2 && toolKeys[k] !== tool) finishDraft(false); else if (draft.length) setDraft([]); setShapeDraft(null); s.setTool(toolKeys[k]); return; }
       if (k === 'g') { s.toggleGrid(); return; }
     };
     const up = (e: KeyboardEvent) => {
@@ -410,7 +407,7 @@ export function Board({ onReady, onMeasure }: Props) {
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, shapeDraft, measurePts, spaceDown, size, fit, zoomAt, zoomTo, zoomToSelection, finishDraft, ctxMenu, undoDraftPoint, joinPick, markPick]);
+  }, [draft, shapeDraft, measurePts, spaceDown, size, fit, zoomAt, zoomTo, zoomToSelection, finishDraft, ctxMenu, undoDraftPoint, joinPick, tool]);
 
   // ─── editing path state sync
   const editPathRef = useRef<PathData | null>(null);
@@ -715,12 +712,14 @@ export function Board({ onReady, onMeasure }: Props) {
   /** Adds a point to the pen/polygon draft (or closes/finishes it). Returns true when a new point was added. */
   const penClick = (w: Vec2): boolean => {
     const s = store.getState();
+    if (tool === 'mark' && pending?.template.kind === 'laneMarking') { applyLaneMarking(w); return false; }
+    const after = () => { if (tool !== 'mark') s.setTool('select'); };
     const last = draft.length ? draft[draft.length - 1] : null;
     if (draft.length >= 3) {
       const first = draft[0];
-      if (Math.hypot(w.x - first.x, w.y - first.y) < tol) { finishDraft(true); s.setTool('select'); return false; }
+      if (Math.hypot(w.x - first.x, w.y - first.y) < tol) { finishDraft(true); after(); return false; }
     }
-    if (last && Math.hypot(w.x - last.x, w.y - last.y) < tol) { finishDraft(false); s.setTool('select'); return false; }
+    if (last && Math.hypot(w.x - last.x, w.y - last.y) < tol) { finishDraft(false); after(); return false; }
     const { p: sp, r } = snapFull(w, last);
     setDraft([...draft, { x: sp.x, y: sp.y, mode: 'corner' }]);
     setDraftSnaps([...draftSnaps.slice(0, draft.length), r]);
@@ -788,28 +787,16 @@ export function Board({ onReady, onMeasure }: Props) {
     if (m) s.addObject(m);
   };
 
-  /** Marking tool: apply a lane marking to the strip under the cursor, or pick points for a line. */
-  const onMarkClick = (w: Vec2) => {
+  /** Marking tool with a lane marking picked (arrows, BUS, bicycle…): put it on the lane under the cursor. */
+  const applyLaneMarking = (w: Vec2) => {
     const s = store.getState();
-    if (pending?.template.kind === 'laneMarking') {
-      const strip = stripAt(w);
-      if (!strip || strip.locked) return;
-      const marking = pending.template.marking;
-      const lanes = strip.spec.lanes.map((l) => ({ ...l, marking }));
-      const lanesEnd = strip.spec.lanesEnd?.map((l) => ({ ...l, marking }));
-      s.updateObject(strip.id, { spec: { ...strip.spec, lanes, lanesEnd } } as Partial<BzObject>);
-      s.select([strip.id]);
-      return;
-    }
-    const { p, r } = snapFull(w, null, false, 0);
-    const pick: MarkPick = r ? { x: p.x, y: p.y, poly: r.poly, param: r.param } : { x: w.x, y: w.y };
-    if (!markPick) { setMarkPick(pick); return; }
-    if (Math.hypot(pick.x - markPick.x, pick.y - markPick.y) < 0.05) { setMarkPick(null); return; }
-    const preset = templateFor('mark');
-    if (!preset) return;
-    const obj = objectFromTemplate(preset, markPath(markPick, pick, markCurve));
-    s.addObject(obj, false);
-    setMarkPick(null);
+    if (pending?.template.kind !== 'laneMarking') return;
+    const strip = stripAt(w);
+    if (!strip || strip.locked) return;
+    const marking = pending.template.marking;
+    const lanes = strip.spec.lanes.map((l) => ({ ...l, marking }));
+    const lanesEnd = strip.spec.lanesEnd?.map((l) => ({ ...l, marking }));
+    s.updateObject(strip.id, { spec: { ...strip.spec, lanes, lanesEnd } } as Partial<BzObject>);
   };
 
   const onStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -845,10 +832,6 @@ export function Board({ onReady, onMeasure }: Props) {
         setJoinPick(null); setJoinBody(null);
         return;
       }
-      case 'mark': {
-        onMarkClick(w);
-        return;
-      }
       case 'measure': {
         if (measurePts.length >= 4) { setMeasurePts([w.x, w.y]); onMeasure?.(null); return; }
         const pts = [...measurePts, w.x, w.y];
@@ -856,8 +839,8 @@ export function Board({ onReady, onMeasure }: Props) {
         if (pts.length === 4) onMeasure?.(Math.hypot(pts[2] - pts[0], pts[3] - pts[1]));
         return;
       }
-      case 'pen': case 'polygon': {
-        if (me.altKey) {
+      case 'pen': case 'polygon': case 'mark': {
+        if (me.altKey && !(tool === 'mark' && pending?.template.kind === 'laneMarking')) {
           // Alt + drag: place a point and pull out curve handles (smooth node)
           if (penClick(w)) {
             const last = draft.length ? draft[draft.length - 1] : null;
@@ -1005,7 +988,6 @@ export function Board({ onReady, onMeasure }: Props) {
       const nearNode = editPathRef.current.nodes.some((nd) => Math.hypot(nd.x - n.x, nd.y - n.y) < tol * 1.2);
       setInsertHint(n.dist < Math.max(tol * 1.5, half) && !nearNode ? { x: n.x + editingObj.x, y: n.y + editingObj.y } : null);
     } else if (insertHint) setInsertHint(null);
-    if (tool === 'mark') { snapWorld(w, null, false, 0); return; }
     if (tool === 'link') {
       if (joinPick && !joinHover) {
         const hit = stripAt(w, joinPick.id);
@@ -1014,8 +996,9 @@ export function Board({ onReady, onMeasure }: Props) {
       } else if (joinBody) setJoinBody(null);
       return;
     }
-    if ((tool === 'pen' || tool === 'polygon') && draft.length) snapWorld(w, draft[draft.length - 1]);
-    else if (tool === 'pen' || tool === 'polygon' || tool === 'line' || tool === 'rect' || tool === 'ellipse') snapWorld(w, null, false);
+    if ((tool === 'pen' || tool === 'polygon' || tool === 'mark') && draft.length) snapWorld(w, draft[draft.length - 1]);
+    else if (tool === 'mark' && pending?.template.kind === 'laneMarking') { if (snapHint) setSnapHint(null); }
+    else if (tool === 'pen' || tool === 'polygon' || tool === 'mark' || tool === 'line' || tool === 'rect' || tool === 'ellipse') snapWorld(w, null, false);
   };
 
   // end handles of a selected path: drag along the road axis = shorten / extend; Alt = free move
@@ -1072,11 +1055,13 @@ export function Board({ onReady, onMeasure }: Props) {
     const cursorPt = withCursor && snapHint ? { x: snapHint.x, y: snapHint.y } : cursor;
     const raw = withCursor && cursorPt ? [...draft, { x: cursorPt.x, y: cursorPt.y, mode: 'corner' as const }] : draft;
     if (raw.length < 2) return null;
-    const nodes = traceNodes(raw, [...draftSnaps.slice(0, draft.length), withCursor ? snapHint : null], false, drawHalfWidth);
-    const preset = templateFor(tool === 'polygon' ? 'polygon' : 'pen');
+    const snaps = [...draftSnaps.slice(0, draft.length), withCursor ? snapHint : null];
+    const curved = tool === 'mark' && markCurve ? curveBetweenEdges(raw, snaps, false) : raw;
+    const nodes = traceNodes(curved, snaps, false, drawHalfWidth);
+    const preset = templateFor(tool === 'polygon' ? 'polygon' : tool === 'mark' ? 'mark' : 'pen');
     if (!preset) return null;
     try { return objectFromTemplate(preset, { nodes, closed: tool === 'polygon' && nodes.length >= 3 }); } catch { return null; }
-  }, [draft, draftSnaps, cursor, snapHint, templateFor, tool, traceNodes, drawHalfWidth]);
+  }, [draft, draftSnaps, cursor, snapHint, templateFor, tool, traceNodes, drawHalfWidth, markCurve]);
   const shapePreviewObj = useMemo(() => {
     if (!shapeDraft) return null;
     const d = shapeDraft;
@@ -1106,15 +1091,7 @@ export function Board({ onReady, onMeasure }: Props) {
     return linkBetween(a, joinPick.atStart, b, joinHover.atStart);
   }, [tool, joinPick, joinHover, joinBody, project.objects]);
 
-  // marking tool: preview of the line being placed + the "slots" (strip edge ends) you can pick
-  const markPreview = useMemo(() => {
-    if (tool !== 'mark' || !markPick || !cursor) return null;
-    const end: MarkPick = snapHint && snapHint.kind !== 'none' ? { x: snapHint.x, y: snapHint.y, poly: snapHint.poly, param: snapHint.param } : { x: cursor.x, y: cursor.y };
-    if (Math.hypot(end.x - markPick.x, end.y - markPick.y) < 0.05) return null;
-    const preset = templateFor('mark');
-    if (!preset) return null;
-    try { return objectFromTemplate(preset, markPath(markPick, end, markCurve)); } catch { return null; }
-  }, [tool, markPick, cursor, snapHint, templateFor, markCurve]);
+  // marking tool: the "slots" (ends of strip edges) you can snap to
   const markSlots = useMemo(() => (tool === 'mark' ? snapTargets.points.filter((p) => p.kind === 'corner' && p.poly?.role === 'edge') : []), [tool, snapTargets]);
 
   // scene layer: tram bands (3), paint (4) and rails (5) of every object, in category order
@@ -1246,14 +1223,10 @@ export function Board({ onReady, onMeasure }: Props) {
             <Circle listening={false} x={insertHint.x} y={insertHint.y} radius={4 * inv} fill="#fff" stroke={ACCENT} strokeWidth={1.5 * inv} />
           )}
 
-          {/* marking tool: slots on strip-edge ends, first pick, preview */}
-          {markPreview && <PreviewNode obj={markPreview} />}
-          {tool === 'mark' && markSlots.map((p, i) => (
+          {/* marking tool: slots on strip-edge ends (hidden while a lane marking is picked) */}
+          {tool === 'mark' && pending?.template.kind !== 'laneMarking' && markSlots.map((p, i) => (
             <Circle key={i} listening={false} x={p.x} y={p.y} radius={3.5 * inv} fill="#fff" stroke={ACCENT} strokeWidth={inv} opacity={0.9} />
           ))}
-          {tool === 'mark' && markPick && (
-            <Circle listening={false} x={markPick.x} y={markPick.y} radius={6 * inv} fill={ACCENT} stroke="#fff" strokeWidth={1.5 * inv} />
-          )}
 
           {/* link tool: dots on every free end; preview of the connecting piece */}
           {joinPreview && <PreviewNode obj={joinPreview} />}
