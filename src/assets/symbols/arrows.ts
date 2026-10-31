@@ -59,25 +59,26 @@ const p27 = svg(100, 260,
 const W = '#ffffff';
 const TAGS = ['strzałka', 'strzałka kierunkowa', 'P-8', 'arrow'];
 
+/** Nazewnictwo wg załącznika nr 2 (P-8a…P-8i). Geometria wspólna z glifami pasów (canvas/pictograms.ts). */
 const base: SymbolDef[] = [
-  { id: 'arr-p8a', name: 'P-8a Strzałka na wprost', category: 'arrows', width: 0.6, height: 5.0, svg: p8a, defaultColor: W, tags: [...TAGS, 'na wprost', 'P-8a'] },
-  { id: 'arr-p8b', name: 'P-8b Strzałka w lewo', category: 'arrows', width: 1.0, height: 5.0, svg: p8b, defaultColor: W, tags: [...TAGS, 'w lewo', 'P-8b'] },
-  { id: 'arr-p8c', name: 'P-8c Strzałka w prawo', category: 'arrows', width: 1.0, height: 5.0, svg: p8c, defaultColor: W, tags: [...TAGS, 'w prawo', 'P-8c'] },
-  { id: 'arr-p8d', name: 'P-8d Strzałka na wprost lub w lewo', category: 'arrows', width: 1.2, height: 5.0, svg: p8d, defaultColor: W, tags: [...TAGS, 'na wprost', 'w lewo', 'P-8d'] },
-  { id: 'arr-p8e', name: 'P-8e Strzałka na wprost lub w prawo', category: 'arrows', width: 1.2, height: 5.0, svg: p8e, defaultColor: W, tags: [...TAGS, 'na wprost', 'w prawo', 'P-8e'] },
-  { id: 'arr-p8f', name: 'P-8f Strzałka w lewo lub w prawo', category: 'arrows', width: 1.76, height: 5.0, svg: p8f, defaultColor: W, tags: [...TAGS, 'w lewo', 'w prawo', 'P-8f'] },
-  { id: 'arr-p8g', name: 'P-8g Strzałka do zawracania', category: 'arrows', width: 0.9, height: 5.0, svg: p8g, defaultColor: W, tags: [...TAGS, 'zawracanie', 'P-8g', 'u-turn'] },
-  { id: 'arr-p8h', name: 'P-8h Strzałka na wprost, w lewo lub w prawo', category: 'arrows', width: 1.76, height: 5.0, svg: p8h, defaultColor: W, tags: [...TAGS, 'na wprost', 'w lewo', 'w prawo', 'P-8h'] },
-  { id: 'arr-p8i', name: 'P-8i Strzałka w lewo lub do zawracania', category: 'arrows', width: 1.0, height: 5.0, svg: p8i, defaultColor: W, tags: [...TAGS, 'w lewo', 'zawracanie', 'P-8i'] },
-  { id: 'arr-p9a', name: 'P-9a Strzałka naprowadzająca w lewo', category: 'arrows', width: 1.1, height: 5.0, svg: p9a, defaultColor: W, tags: ['strzałka', 'naprowadzająca', 'P-9', 'P-9a', 'zmiana pasa'] },
-  { id: 'arr-p9b', name: 'P-9b Strzałka naprowadzająca w prawo', category: 'arrows', width: 1.1, height: 5.0, svg: p9b, defaultColor: W, tags: ['strzałka', 'naprowadzająca', 'P-9', 'P-9b', 'zmiana pasa'] },
+  { id: 'arr-p8a', name: 'P-8a Strzałka kierunkowa na wprost', category: 'arrows', width: 0.75, height: 5.0, svg: p8a, defaultColor: W, tags: [...TAGS, 'na wprost', 'P-8a'] },
+  { id: 'arr-p8b', name: 'P-8b Strzałka kierunkowa w lewo', category: 'arrows', width: 1.05, height: 5.0, svg: p8b, defaultColor: W, tags: [...TAGS, 'w lewo', 'P-8b'] },
+  { id: 'arr-p8c', name: 'P-8c Strzałka kierunkowa do zawracania', category: 'arrows', width: 1.8, height: 5.0, svg: p8g, defaultColor: W, tags: [...TAGS, 'zawracanie', 'P-8c', 'u-turn'] },
+  { id: 'arr-p8d', name: 'P-8d Strzałka kierunkowa w prawo', category: 'arrows', width: 1.05, height: 5.0, svg: p8c, defaultColor: W, tags: [...TAGS, 'w prawo', 'P-8d'] },
+  { id: 'arr-p8e', name: 'P-8e Strzałka kierunkowa na wprost lub w lewo', category: 'arrows', width: 1.35, height: 5.0, svg: p8d, defaultColor: W, tags: [...TAGS, 'na wprost', 'w lewo', 'P-8e'] },
+  { id: 'arr-p8f', name: 'P-8f Strzałka kierunkowa na wprost lub w prawo', category: 'arrows', width: 1.35, height: 5.0, svg: p8e, defaultColor: W, tags: [...TAGS, 'na wprost', 'w prawo', 'P-8f'] },
+  { id: 'arr-p8g', name: 'P-8g Strzałka kierunkowa w lewo lub w prawo', category: 'arrows', width: 1.95, height: 5.0, svg: p8f, defaultColor: W, tags: [...TAGS, 'w lewo', 'w prawo', 'P-8g'] },
+  { id: 'arr-p8h', name: 'P-8h Strzałka kierunkowa na wprost, w lewo lub w prawo', category: 'arrows', width: 1.95, height: 5.0, svg: p8h, defaultColor: W, tags: [...TAGS, 'na wprost', 'w lewo', 'w prawo', 'P-8h'] },
+  { id: 'arr-p8i', name: 'P-8i Strzałka kierunkowa na wprost i do zawracania', category: 'arrows', width: 2.1, height: 5.0, svg: p8i, defaultColor: W, tags: [...TAGS, 'na wprost', 'zawracanie', 'P-8i'] },
+  { id: 'arr-p9a', name: 'P-9a Strzałka naprowadzająca w lewo', category: 'arrows', width: 2.9, height: 5.0, svg: p9a, defaultColor: W, tags: ['strzałka', 'naprowadzająca', 'P-9', 'P-9a', 'zmiana pasa'] },
+  { id: 'arr-p9b', name: 'P-9b Strzałka naprowadzająca w prawo', category: 'arrows', width: 2.9, height: 5.0, svg: p9b, defaultColor: W, tags: ['strzałka', 'naprowadzająca', 'P-9', 'P-9b', 'zmiana pasa'] },
   { id: 'arr-p27', name: 'P-27 Kierunek i tor ruchu roweru', category: 'arrows', width: 1.0, height: 2.6, svg: p27, defaultColor: W, tags: ['P-27', 'rower', 'sharrow', 'kontrapas', 'daszki'] },
 ];
 
-/** P-8a–h and P-9a/b share their geometry with the lane glyphs (canvas/pictograms.ts). */
+/** P-8a–i and P-9a/b share their geometry with the lane glyphs (canvas/pictograms.ts). */
 const GENERATED: Record<string, PictoId> = {
   'arr-p8a': 'p8a', 'arr-p8b': 'p8b', 'arr-p8c': 'p8c', 'arr-p8d': 'p8d', 'arr-p8e': 'p8e',
-  'arr-p8f': 'p8f', 'arr-p8g': 'p8g', 'arr-p8h': 'p8h', 'arr-p9a': 'p9a', 'arr-p9b': 'p9b',
+  'arr-p8f': 'p8f', 'arr-p8g': 'p8g', 'arr-p8h': 'p8h', 'arr-p8i': 'p8i', 'arr-p9a': 'p9a', 'arr-p9b': 'p9b',
 };
 
 export const symbols: SymbolDef[] = base.map((d) => {

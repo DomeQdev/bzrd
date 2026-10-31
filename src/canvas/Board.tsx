@@ -5,15 +5,15 @@ import type { BzObject, LineObj, PathData, PathNode, Preset, StripObj, Vec2 } fr
 import { useProject, type Tool } from '../store/project';
 import { ObjectNode } from './ObjectNode';
 import { useImage } from './useImage';
-import { drawObject, hitPolygon, objectBounds } from './draw';
-import { cornerNode, cutAtNode, cutPath, ellipsePath, flatten, linePath, nearestOnPath, rectPath, setPathLength, smoothNode, splitSegment, transformPath } from './path';
-import { buildSnapTargets, canTrace, outlineSamples, snapAngle, snapBox, snapOutline, snapPoint, traceBetween, type GuideResult, type SnapResult } from './snap';
+import { computeCaps, drawMarkings, drawObject, drawRails, drawTramBand, hitPolygon, isTramStrip, objectBounds, roadwayPolygons, sortByRank, type Drawable } from './draw';
+import { cornerNode, cutAtNode, cutPath, ellipsePath, flatten, linePath, nearestOnPath, rectPath, reversePath, sampleAt, setPathLength, smoothNode, splitSegment, transformPath } from './path';
+import { buildSnapTargets, canTrace, outlineSamples, pointAt, snapAngle, snapBox, snapOutline, snapPoint, traceBetween, type GuideResult, type Polyline, type SnapResult } from './snap';
 import { specWidth } from './roadGeometry';
 import { uid } from '../store/project';
 import { formatLength } from '../model/units';
 import { objectFromTemplate, normalizeOrigin, textObject } from '../lib/factory';
 import type { TextObj } from '../model/types';
-import { closeLoop, endPoint, mergeChain, mergePair, taperInto, type PathObj } from '../lib/merge';
+import { endPoint, linkBetween, mergeChain, taperInto, type PathObj } from '../lib/merge';
 import { pointInPolygon } from './path';
 import { presetById } from '../catalog';
 
@@ -42,7 +42,75 @@ function isEditableTarget(t: EventTarget | null) {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
-const DEFAULT_TEMPLATE: Record<string, string> = { pen: 'mk-p2', polygon: 'mk-asphalt', line: 'mk-p2', rect: 'mk-asphalt', ellipse: 'mk-asphalt' };
+const DEFAULT_TEMPLATE: Record<string, string> = { pen: 'mk-p2a', polygon: 'mk-asphalt', line: 'mk-p2a', rect: 'mk-asphalt', ellipse: 'mk-asphalt', mark: 'mk-p1b' };
+
+/**
+ * Marking tool (Intersection-Marking-Tool style), applied to the pen draft: between two consecutive points that sit
+ * on two DIFFERENT strip edges the segment becomes a smooth curve tangent to both edges (lane guidance through an
+ * intersection). Points on the SAME edge are handled by traceNodes (the line follows the edge).
+ */
+function curveBetweenEdges(nodes: PathNode[], snaps: Array<SnapResult | null | undefined>, closed: boolean): PathNode[] {
+  const out = nodes.map((n) => ({ ...n }));
+  const n = out.length;
+  const segs = closed ? n : n - 1;
+  const toward = (pl: Polyline, param: number, from: Vec2, to: Vec2): Vec2 => {
+    const t = pointAt(pl, param);
+    const sgn = t.tx * (to.x - from.x) + t.ty * (to.y - from.y) >= 0 ? 1 : -1;
+    return { x: t.tx * sgn, y: t.ty * sgn };
+  };
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n;
+    const a = snaps[i], b = snaps[j];
+    if (!a?.poly || !b?.poly || a.poly.role !== 'edge' || b.poly.role !== 'edge' || a.poly === b.poly) continue;
+    if (a.param === undefined || b.param === undefined || out[i].hOut || out[j].hIn) continue;
+    const A = out[i], B = out[j];
+    const D = Math.hypot(B.x - A.x, B.y - A.y);
+    if (D < 0.05) continue;
+    const h = D / 3;
+    const tA = toward(a.poly, a.param, A, B);
+    const tB = toward(b.poly, b.param, B, A);
+    // only when the line runs ALONG the edges (lane guidance); across a lane (stop lines, crossings) it stays straight
+    const cA = (tA.x * (B.x - A.x) + tA.y * (B.y - A.y)) / D, cB = (tB.x * (A.x - B.x) + tB.y * (A.y - B.y)) / D;
+    if (cA < 0.5 || cB < 0.5) continue;
+    A.hOut = { x: A.x + tA.x * h, y: A.y + tA.y * h };
+    B.hIn = { x: B.x + tB.x * h, y: B.y + tB.y * h };
+  }
+  return out;
+}
+
+/** Direction of travel (world unit vector) of the lane under `w`, or null (no strip / no flow). */
+function travelAt(w: Vec2, objects: BzObject[]): Vec2 | null {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.type !== 'strip' || o.visible === false || o.path.nodes.length < 2) continue;
+    const local = { x: w.x - o.x, y: w.y - o.y };
+    if (!pointInPolygon(local, hitPolygon(o))) continue;
+    const dir = o.spec.lanes[0]?.dir ?? 0;
+    if (dir === 0) continue;
+    const f = flatten(o.path, 0.5);
+    const smp = sampleAt(f, nearestOnPath(f, local).s);
+    return { x: smp.tx * dir, y: smp.ty * dir };
+  }
+  return null;
+}
+
+/**
+ * Orient markings that have a "front": P-13 teeth (drawn on the path's left) and the P-15 apex (path start) must point
+ * at the approaching driver. When the marking lies on a lane with a direction of travel, reverse the path if needed.
+ */
+function orientForTraffic(obj: BzObject, objects: BzObject[]): BzObject {
+  if (obj.type !== 'line' || obj.path.nodes.length < 2) return obj;
+  const teeth = obj.variant === 'plain' && obj.style === 'triangles';
+  const yieldT = obj.variant === 'yieldTriangle';
+  if (!teeth && !yieldT) return obj;
+  const f = flatten(obj.path, 0.25);
+  const mid = sampleAt(f, f.length / 2);
+  const travel = travelAt({ x: obj.x + mid.x, y: obj.y + mid.y }, objects);
+  if (!travel) return obj;
+  // teeth point to the path's left normal (nx, ny) → must face against travel; P-15 path must run with travel
+  const wrong = teeth ? mid.nx * travel.x + mid.ny * travel.y > 0 : mid.tx * travel.x + mid.ty * travel.y < 0;
+  return wrong ? normalizeOrigin({ ...obj, path: reversePath(obj.path) }) : obj;
+}
 
 let clipboard: BzObject[] = [];
 
@@ -105,6 +173,7 @@ export function Board({ onReady, onMeasure }: Props) {
   const [joinHover, setJoinHover] = useState<{ id: string; atStart: boolean } | null>(null);
   /** join tool: lane body under the cursor (merge INTO its side) */
   const [joinBody, setJoinBody] = useState<{ id: string; w: Vec2 } | null>(null);
+  const markCurve = useProject((s) => s.markCurve);
   const dragStartRef = useRef<{ id: string; items: Map<string, Vec2>; box: { x0: number; y0: number; x1: number; y1: number }; alt: boolean; samples: Vec2[] } | null>(null);
   const transformBatch = useRef<Array<{ id: string; patch: Partial<BzObject> }>>([]);
 
@@ -151,13 +220,13 @@ export function Board({ onReady, onMeasure }: Props) {
 
   const zoomToSelection = useCallback(() => {
     const s = store.getState();
-    const layer = objLayerRef.current;
-    if (!layer || !s.selection.length) return;
+    const st = stageRef.current;
+    if (!st || !s.selection.length) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const id of s.selection) {
-      const n = layer.findOne<Konva.Group>('#' + id);
+      const n = st.findOne<Konva.Group>('#' + id);
       if (!n) continue;
-      const r = n.getClientRect({ relativeTo: layer as unknown as Konva.Container });
+      const r = n.getClientRect({ relativeTo: st as unknown as Konva.Container });
       minX = Math.min(minX, r.x); minY = Math.min(minY, r.y); maxX = Math.max(maxX, r.x + r.width); maxY = Math.max(maxY, r.y + r.height);
     }
     if (!isFinite(minX)) return;
@@ -177,7 +246,7 @@ export function Board({ onReady, onMeasure }: Props) {
   }, [project.objects, editing]);
   const dragTargets = useMemo(() => buildSnapTargets(project.objects, new Set(selection)), [project.objects, selection]);
 
-  const drawHalfWidth = useMemo(() => (pending?.template.kind === 'strip' ? specWidth(pending.template.spec.lanes) / 2 : 0), [pending]);
+  const drawHalfWidth = useMemo(() => (tool !== 'mark' && pending?.template.kind === 'strip' ? specWidth(pending.template.spec.lanes) / 2 : 0), [pending, tool]);
   /** Snap and return both the point and the snap info (edge + position) for tracing. */
   const snapFull = useCallback((p: Vec2, from?: Vec2 | null, useShift = true, half?: number): { p: Vec2; r: SnapResult | null } => {
     let q = p;
@@ -210,8 +279,13 @@ export function Board({ onReady, onMeasure }: Props) {
 
   // ─── template resolution
   const templateFor = useCallback((t: Tool): Preset | null => {
-    if (pending) return pending;
-    return presetById(DEFAULT_TEMPLATE[t] ?? 'mk-p2') ?? null;
+    if (t === 'mark') {
+      // the marking tool draws open painted lines: strips, areas and P-21 fall back to the default line
+      if (pending?.template.kind === 'line' && !pending.template.closedOnly) return pending;
+      return presetById(DEFAULT_TEMPLATE.mark) ?? null;
+    }
+    if (pending && pending.template.kind !== 'laneMarking') return pending;
+    return presetById(DEFAULT_TEMPLATE[t] ?? 'mk-p2a') ?? null;
   }, [pending]);
 
   const createFromPath = useCallback((worldPath: PathData, t: Tool) => {
@@ -219,7 +293,7 @@ export function Board({ onReady, onMeasure }: Props) {
     if (!preset) return;
     let path = worldPath;
     if (preset.template.kind === 'line' && preset.template.closedOnly) path = { ...path, closed: true };
-    const obj = objectFromTemplate(preset, path);
+    const obj = orientForTraffic(objectFromTemplate(preset, path), store.getState().project!.objects);
     store.getState().addObject(obj);
   }, [templateFor, store]);
 
@@ -231,10 +305,12 @@ export function Board({ onReady, onMeasure }: Props) {
     setSnapHint(null);
     if (nodes.length < 2) return;
     const close = closed || tool === 'polygon';
-    const clean = close ? nodes : nodes.map((n, i) => (i === nodes.length - 1 ? { ...n, hOut: undefined } : n));
-    const traced = traceNodes(clean, draftSnaps.slice(0, nodes.length), close, drawHalfWidth);
-    createFromPath({ nodes: traced, closed: close }, tool === 'polygon' ? 'polygon' : 'pen');
-  }, [draft, draftSnaps, createFromPath, tool, traceNodes, drawHalfWidth]);
+    const snaps = draftSnaps.slice(0, nodes.length);
+    let clean = close ? nodes : nodes.map((n, i) => (i === nodes.length - 1 ? { ...n, hOut: undefined } : n));
+    if (tool === 'mark' && markCurve) clean = curveBetweenEdges(clean, snaps, close);
+    const traced = traceNodes(clean, snaps, close, drawHalfWidth);
+    createFromPath({ nodes: traced, closed: close }, tool === 'polygon' ? 'polygon' : tool === 'mark' ? 'mark' : 'pen');
+  }, [draft, draftSnaps, createFromPath, tool, traceNodes, drawHalfWidth, markCurve]);
 
   // ─── wheel
   const onWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -317,7 +393,7 @@ export function Board({ onReady, onMeasure }: Props) {
         return;
       }
       if (e.key === 'Escape') {
-        if (draft.length) { if (draft.length >= 2) finishDraft(false); else { setDraft([]); setSnapHint(null); } s.setTool('select'); return; }
+        if (draft.length) { if (draft.length >= 2) finishDraft(false); else { setDraft([]); setSnapHint(null); } if (s.tool !== 'mark') s.setTool('select'); return; }
         if (shapeDraft) { setShapeDraft(null); return; }
         if (ctxMenu) { setCtxMenu(null); return; }
         if (joinPick) { setJoinPick(null); return; }
@@ -328,7 +404,7 @@ export function Board({ onReady, onMeasure }: Props) {
         return;
       }
       if (e.key === 'Enter') {
-        if (draft.length) { finishDraft(false); s.setTool('select'); return; }
+        if (draft.length) { finishDraft(false); if (s.tool !== 'mark') s.setTool('select'); return; }
         if (s.editing) { s.setEditing(null); return; }
         if (s.selection.length === 1) {
           const o = s.project!.objects.find((x) => x.id === s.selection[0]);
@@ -355,8 +431,8 @@ export function Board({ onReady, onMeasure }: Props) {
       if (e.shiftKey && k === 'r') { const objs = s.project!.objects.filter((o) => s.selection.includes(o.id) && !o.locked && (o.type === 'symbol' || o.type === 'text')); s.updateObjects(objs.map((o) => ({ id: o.id, patch: { rotation: (o.rotation + 90) % 360 } }))); return; }
       if (e.shiftKey && k === 'h') { const objs = s.project!.objects.filter((o) => s.selection.includes(o.id) && o.type === 'symbol'); s.updateObjects(objs.map((o) => ({ id: o.id, patch: { flipX: !(o as { flipX?: boolean }).flipX } as Partial<BzObject> }))); return; }
       if (e.shiftKey) return;
-      const toolKeys: Record<string, Tool> = { v: 'select', h: 'hand', p: 'pen', w: 'polygon', l: 'line', r: 'rect', o: 'ellipse', t: 'text', m: 'measure', j: 'join' };
-      if (toolKeys[k]) { if (draft.length >= 2 && toolKeys[k] !== 'pen' && toolKeys[k] !== 'polygon') finishDraft(false); else if (draft.length) setDraft([]); setShapeDraft(null); s.setTool(toolKeys[k]); return; }
+      const toolKeys: Record<string, Tool> = { v: 'select', h: 'hand', p: 'pen', w: 'polygon', l: 'line', r: 'rect', o: 'ellipse', t: 'text', m: 'measure', j: 'link', k: 'mark' };
+      if (toolKeys[k]) { if (draft.length >= 2 && toolKeys[k] !== tool) finishDraft(false); else if (draft.length) setDraft([]); setShapeDraft(null); s.setTool(toolKeys[k]); return; }
       if (k === 'g') { s.toggleGrid(); return; }
     };
     const up = (e: KeyboardEvent) => {
@@ -368,7 +444,7 @@ export function Board({ onReady, onMeasure }: Props) {
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, shapeDraft, measurePts, spaceDown, size, fit, zoomAt, zoomTo, zoomToSelection, finishDraft, ctxMenu, undoDraftPoint, joinPick]);
+  }, [draft, shapeDraft, measurePts, spaceDown, size, fit, zoomAt, zoomTo, zoomToSelection, finishDraft, ctxMenu, undoDraftPoint, joinPick, tool]);
 
   // ─── editing path state sync
   const editPathRef = useRef<PathData | null>(null);
@@ -400,10 +476,10 @@ export function Board({ onReady, onMeasure }: Props) {
 
   // ─── transformer attach
   useEffect(() => {
-    const tr = trRef.current, layer = objLayerRef.current;
-    if (!tr || !layer) return;
+    const tr = trRef.current, stage = stageRef.current;
+    if (!tr || !stage) return;
     if (editing || tool !== 'select') { tr.nodes([]); tr.getLayer()?.batchDraw(); return; }
-    const nodes = selection.map((id) => layer.findOne<Konva.Group>('#' + id)).filter((n): n is Konva.Group => !!n);
+    const nodes = selection.map((id) => stage.findOne<Konva.Group>('#' + id)).filter((n): n is Konva.Group => !!n);
     const sel = project.objects.filter((o) => selection.includes(o.id));
     const locked = sel.some((o) => o.locked);
     const singlePath = sel.length === 1 && (sel[0].type === 'strip' || sel[0].type === 'line');
@@ -512,20 +588,21 @@ export function Board({ onReady, onMeasure }: Props) {
     const alt = !!(e.evt as MouseEvent | undefined)?.altKey;
     if (!s.selection.includes(id)) s.select([id]);
     const items = new Map<string, Vec2>();
-    const layer = objLayerRef.current!;
+    const stage = stageRef.current!;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const o of s.project!.objects) {
       if ((s.selection.includes(o.id) || o.id === id) && !o.locked) {
         items.set(o.id, { x: o.x, y: o.y });
-        const n = layer.findOne<Konva.Group>('#' + o.id);
+        const n = stage.findOne<Konva.Group>('#' + o.id);
         if (n) {
-          const r = n.getClientRect({ relativeTo: layer as unknown as Konva.Container });
+          const r = n.getClientRect({ relativeTo: stage as unknown as Konva.Container });
           x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.width); y1 = Math.max(y1, r.y + r.height);
         }
       }
     }
     const samples = s.project!.objects.filter((o) => items.has(o.id)).flatMap((o) => outlineSamples(o, 16));
     dragStartRef.current = { id, items, box: { x0, y0, x1, y1 }, alt, samples };
+    s.beginGesture();
   };
   const onDragMove = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
     const st = dragStartRef.current;
@@ -550,12 +627,8 @@ export function Board({ onReady, onMeasure }: Props) {
       }
       node.position({ x: me.x + dx, y: me.y + dy });
     } else if (ev?.shiftKey) node.position({ x: me.x + dx, y: me.y + dy });
-    const layer = objLayerRef.current!;
-    for (const [oid, p] of st.items) {
-      if (oid === id) continue;
-      const n = layer.findOne<Konva.Group>('#' + oid);
-      if (n) n.position({ x: p.x + dx, y: p.y + dy });
-    }
+    // paint / tram slabs / rails live in the scene layer, so the store follows the drag live (one undo step at the end)
+    store.getState().updateObjects([...st.items.entries()].map(([oid, p]) => ({ id: oid, patch: { x: p.x + dx, y: p.y + dy } })), { history: false });
   };
   const onDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
     const st = dragStartRef.current;
@@ -567,13 +640,15 @@ export function Board({ onReady, onMeasure }: Props) {
     const dx = node.x() - me.x, dy = node.y() - me.y;
     const s = store.getState();
     if (st.alt) {
-      const layer = objLayerRef.current!;
-      for (const [oid, p] of st.items) layer.findOne<Konva.Group>('#' + oid)?.position(p);
-      const copies = s.project!.objects.filter((o) => st.items.has(o.id)).map((o) => ({ ...structuredClone(o), id: uid(), x: o.x + dx, y: o.y + dy }) as BzObject);
+      // Alt-drag = drag a copy: put the originals back and add the copies at the drop position
+      const copies = s.project!.objects.filter((o) => st.items.has(o.id)).map((o) => ({ ...structuredClone(o), id: uid(), x: o.x, y: o.y }) as BzObject);
+      s.updateObjects([...st.items.entries()].map(([oid, p]) => ({ id: oid, patch: { x: p.x, y: p.y } })), { history: false });
       s.addObjects(copies);
+      s.endGesture();
       return;
     }
-    s.updateObjects([...st.items.entries()].map(([oid, p]) => ({ id: oid, patch: { x: p.x + dx, y: p.y + dy } })));
+    s.updateObjects([...st.items.entries()].map(([oid, p]) => ({ id: oid, patch: { x: p.x + dx, y: p.y + dy } })), { history: false });
+    s.endGesture();
   };
 
   const onTransformEnd = (id: string, node: Konva.Group) => {
@@ -629,11 +704,11 @@ export function Board({ onReady, onMeasure }: Props) {
         setRubber(null);
         const x0 = Math.min(r.x0, r.x1), x1 = Math.max(r.x0, r.x1), y0 = Math.min(r.y0, r.y1), y1 = Math.max(r.y0, r.y1);
         if (x1 - x0 < 3 && y1 - y0 < 3) return;
-        const layer = objLayerRef.current!;
+        const stage = stageRef.current!;
         const hits: string[] = [];
         for (const o of project.objects) {
           if (o.locked || o.visible === false) continue;
-          const n = layer.findOne<Konva.Group>('#' + o.id);
+          const n = stage.findOne<Konva.Group>('#' + o.id);
           if (!n) continue;
           const cr = n.getClientRect();
           if (cr.x < x1 && cr.x + cr.width > x0 && cr.y < y1 && cr.y + cr.height > y0) hits.push(o.id);
@@ -674,12 +749,14 @@ export function Board({ onReady, onMeasure }: Props) {
   /** Adds a point to the pen/polygon draft (or closes/finishes it). Returns true when a new point was added. */
   const penClick = (w: Vec2): boolean => {
     const s = store.getState();
+    if (tool === 'mark' && pending?.template.kind === 'laneMarking') { applyLaneMarking(w); return false; }
+    const after = () => { if (tool !== 'mark') s.setTool('select'); };
     const last = draft.length ? draft[draft.length - 1] : null;
     if (draft.length >= 3) {
       const first = draft[0];
-      if (Math.hypot(w.x - first.x, w.y - first.y) < tol) { finishDraft(true); s.setTool('select'); return false; }
+      if (Math.hypot(w.x - first.x, w.y - first.y) < tol) { finishDraft(true); after(); return false; }
     }
-    if (last && Math.hypot(w.x - last.x, w.y - last.y) < tol) { finishDraft(false); s.setTool('select'); return false; }
+    if (last && Math.hypot(w.x - last.x, w.y - last.y) < tol) { finishDraft(false); after(); return false; }
     const { p: sp, r } = snapFull(w, last);
     setDraft([...draft, { x: sp.x, y: sp.y, mode: 'corner' }]);
     setDraftSnaps([...draftSnaps.slice(0, draft.length), r]);
@@ -733,6 +810,7 @@ export function Board({ onReady, onMeasure }: Props) {
     return true;
   };
 
+  /** Link tool: end A, then end B → a NEW connecting piece (A and B stay as they are). */
   const onJoinEnd = (id: string, atStart: boolean, e: Konva.KonvaEventObject<MouseEvent>) => {
     e.cancelBubble = true;
     const s = store.getState();
@@ -742,9 +820,20 @@ export function Board({ onReady, onMeasure }: Props) {
     const b = s.project!.objects.find((o) => o.id === id) as PathObj | undefined;
     setJoinPick(null); setJoinHover(null);
     if (!a || !b) return;
-    if (a.id === b.id) { const loop = closeLoop(a); if (loop) s.mergeObjects(loop, []); return; }
-    const m = mergePair(a, joinPick.atStart, b, atStart);
-    if (m) s.mergeObjects(m, [b.id]);
+    const m = linkBetween(a, joinPick.atStart, b, atStart);
+    if (m) s.addObject(m);
+  };
+
+  /** Marking tool with a lane marking picked (arrows, BUS, bicycle…): put it on the lane under the cursor. */
+  const applyLaneMarking = (w: Vec2) => {
+    const s = store.getState();
+    if (pending?.template.kind !== 'laneMarking') return;
+    const strip = stripAt(w);
+    if (!strip || strip.locked) return;
+    const marking = pending.template.marking;
+    const lanes = strip.spec.lanes.map((l) => ({ ...l, marking }));
+    const lanesEnd = strip.spec.lanesEnd?.map((l) => ({ ...l, marking }));
+    s.updateObject(strip.id, { spec: { ...strip.spec, lanes, lanesEnd } } as Partial<BzObject>);
   };
 
   const onStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -774,7 +863,7 @@ export function Board({ onReady, onMeasure }: Props) {
         setTextEdit({ id: t.id });
         return;
       }
-      case 'join': {
+      case 'link': {
         // with an end picked: clicking a lane's body merges the end INTO that lane (klin); empty space cancels
         doTaper(w);
         setJoinPick(null); setJoinBody(null);
@@ -787,8 +876,8 @@ export function Board({ onReady, onMeasure }: Props) {
         if (pts.length === 4) onMeasure?.(Math.hypot(pts[2] - pts[0], pts[3] - pts[1]));
         return;
       }
-      case 'pen': case 'polygon': {
-        if (me.altKey) {
+      case 'pen': case 'polygon': case 'mark': {
+        if (me.altKey && !(tool === 'mark' && pending?.template.kind === 'laneMarking')) {
           // Alt + drag: place a point and pull out curve handles (smooth node)
           if (penClick(w)) {
             const last = draft.length ? draft[draft.length - 1] : null;
@@ -936,7 +1025,7 @@ export function Board({ onReady, onMeasure }: Props) {
       const nearNode = editPathRef.current.nodes.some((nd) => Math.hypot(nd.x - n.x, nd.y - n.y) < tol * 1.2);
       setInsertHint(n.dist < Math.max(tol * 1.5, half) && !nearNode ? { x: n.x + editingObj.x, y: n.y + editingObj.y } : null);
     } else if (insertHint) setInsertHint(null);
-    if (tool === 'join') {
+    if (tool === 'link') {
       if (joinPick && !joinHover) {
         const hit = stripAt(w, joinPick.id);
         if (!hit) { if (joinBody) setJoinBody(null); }
@@ -944,8 +1033,9 @@ export function Board({ onReady, onMeasure }: Props) {
       } else if (joinBody) setJoinBody(null);
       return;
     }
-    if ((tool === 'pen' || tool === 'polygon') && draft.length) snapWorld(w, draft[draft.length - 1]);
-    else if (tool === 'pen' || tool === 'polygon' || tool === 'line' || tool === 'rect' || tool === 'ellipse') snapWorld(w, null, false);
+    if ((tool === 'pen' || tool === 'polygon' || tool === 'mark') && draft.length) snapWorld(w, draft[draft.length - 1]);
+    else if (tool === 'mark' && pending?.template.kind === 'laneMarking') { if (snapHint) setSnapHint(null); }
+    else if (tool === 'pen' || tool === 'polygon' || tool === 'mark' || tool === 'line' || tool === 'rect' || tool === 'ellipse') snapWorld(w, null, false);
   };
 
   // end handles of a selected path: drag along the road axis = shorten / extend; Alt = free move
@@ -1002,11 +1092,13 @@ export function Board({ onReady, onMeasure }: Props) {
     const cursorPt = withCursor && snapHint ? { x: snapHint.x, y: snapHint.y } : cursor;
     const raw = withCursor && cursorPt ? [...draft, { x: cursorPt.x, y: cursorPt.y, mode: 'corner' as const }] : draft;
     if (raw.length < 2) return null;
-    const nodes = traceNodes(raw, [...draftSnaps.slice(0, draft.length), withCursor ? snapHint : null], false, drawHalfWidth);
-    const preset = templateFor(tool === 'polygon' ? 'polygon' : 'pen');
+    const snaps = [...draftSnaps.slice(0, draft.length), withCursor ? snapHint : null];
+    const curved = tool === 'mark' && markCurve ? curveBetweenEdges(raw, snaps, false) : raw;
+    const nodes = traceNodes(curved, snaps, false, drawHalfWidth);
+    const preset = templateFor(tool === 'polygon' ? 'polygon' : tool === 'mark' ? 'mark' : 'pen');
     if (!preset) return null;
     try { return objectFromTemplate(preset, { nodes, closed: tool === 'polygon' && nodes.length >= 3 }); } catch { return null; }
-  }, [draft, draftSnaps, cursor, snapHint, templateFor, tool, traceNodes, drawHalfWidth]);
+  }, [draft, draftSnaps, cursor, snapHint, templateFor, tool, traceNodes, drawHalfWidth, markCurve]);
   const shapePreviewObj = useMemo(() => {
     if (!shapeDraft) return null;
     const d = shapeDraft;
@@ -1021,7 +1113,7 @@ export function Board({ onReady, onMeasure }: Props) {
   }, [shapeDraft, tool, templateFor]);
 
   const joinPreview = useMemo(() => {
-    if (tool !== 'join' || !joinPick) return null;
+    if (tool !== 'link' || !joinPick) return null;
     if (!joinHover && joinBody) {
       const a = project.objects.find((o) => o.id === joinPick.id);
       const b = project.objects.find((o) => o.id === joinBody.id);
@@ -1033,8 +1125,34 @@ export function Board({ onReady, onMeasure }: Props) {
     const a = project.objects.find((o) => o.id === joinPick.id) as PathObj | undefined;
     const b = project.objects.find((o) => o.id === joinHover.id) as PathObj | undefined;
     if (!a || !b) return null;
-    return a.id === b.id ? closeLoop(a) : mergePair(a, joinPick.atStart, b, joinHover.atStart);
+    return linkBetween(a, joinPick.atStart, b, joinHover.atStart);
   }, [tool, joinPick, joinHover, joinBody, project.objects]);
+
+  // marking tool: the "slots" (ends of strip edges) you can snap to
+  const markSlots = useMemo(() => (tool === 'mark' ? snapTargets.points.filter((p) => p.kind === 'corner' && p.poly?.role === 'edge') : []), [tool, snapTargets]);
+
+  // scene layer: tram bands (3), paint (4) and rails (5) of every object, in category order
+  const drawables = useMemo(() => sortByRank(project.objects.filter((o): o is Drawable => o.type !== 'symbol')), [project.objects]);
+  const symbolObjs = useMemo(() => sortByRank(project.objects.filter((o) => o.type === 'symbol')), [project.objects]);
+  const caps = useMemo(() => computeCaps(project.objects), [project.objects]);
+  const roadPolys = useMemo(() => roadwayPolygons(project.objects), [project.objects]);
+  const sceneFunc = useCallback((context: Konva.Context) => {
+    const ctx = (context as unknown as { _context: CanvasRenderingContext2D })._context;
+    const each = (fn: (o: Drawable) => void) => {
+      for (const o of drawables) {
+        if (o.visible === false) continue;
+        ctx.save();
+        ctx.translate(o.x, o.y);
+        if (o.rotation) ctx.rotate((o.rotation * Math.PI) / 180);
+        if (o.opacity !== undefined) ctx.globalAlpha *= o.opacity;
+        fn(o);
+        ctx.restore();
+      }
+    };
+    each((o) => { if (o.type === 'strip' && isTramStrip(o)) drawTramBand(ctx, o, roadPolys, caps.get(o.id)); });
+    each((o) => drawMarkings(ctx, o));
+    each((o) => { if (o.type === 'strip' && isTramStrip(o)) drawRails(ctx, o); });
+  }, [drawables, roadPolys, caps]);
 
   const hoverObj = useMemo(() => (hoverId && !selection.includes(hoverId) && tool === 'select' && !editing ? project.objects.find((o) => o.id === hoverId) ?? null : null), [hoverId, selection, project.objects, tool, editing]);
   const hoverPoly = useMemo(() => (hoverObj ? hitPolygon(hoverObj) : null), [hoverObj]);
@@ -1075,9 +1193,21 @@ export function Board({ onReady, onMeasure }: Props) {
           )}
         </Layer>
 
+        {/* surfaces (asphalt, lanes, crossing backgrounds) + hit areas of every non-symbol object, bottom category first */}
         <Layer ref={objLayerRef} name="objects" listening={!panning && (tool === 'select')}>
-          {project.objects.map((o) => (
-            <ObjectNode key={o.id} obj={o} draggable={tool === 'select' && !panning && !editing} listening={!editing || editing.id === o.id}
+          {drawables.map((o) => (
+            <ObjectNode key={o.id} obj={o} caps={caps.get(o.id)} draggable={tool === 'select' && !panning && !editing} listening={!editing || editing.id === o.id}
+              onMouseDown={onObjMouseDown} onDblClick={onObjDblClick} onHover={onHover}
+              onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onTransformEnd={onTransformEnd} />
+          ))}
+        </Layer>
+        {/* tram bands with crossing slabs, then ALL paint, then rails — always above every surface */}
+        <Layer name="scene" listening={false}>
+          <Shape sceneFunc={sceneFunc} listening={false} perfectDrawEnabled={false} />
+        </Layer>
+        <Layer name="symbols" listening={!panning && (tool === 'select')}>
+          {symbolObjs.map((o) => (
+            <ObjectNode key={o.id} obj={o} draggable={tool === 'select' && !panning && !editing} listening={!editing}
               onMouseDown={onObjMouseDown} onDblClick={onObjDblClick} onHover={onHover}
               onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onTransformEnd={onTransformEnd} />
           ))}
@@ -1130,9 +1260,14 @@ export function Board({ onReady, onMeasure }: Props) {
             <Circle listening={false} x={insertHint.x} y={insertHint.y} radius={4 * inv} fill="#fff" stroke={ACCENT} strokeWidth={1.5 * inv} />
           )}
 
-          {/* join tool: dots on every free end; preview of the result */}
+          {/* marking tool: slots on strip-edge ends (hidden while a lane marking is picked) */}
+          {tool === 'mark' && pending?.template.kind !== 'laneMarking' && markSlots.map((p, i) => (
+            <Circle key={i} listening={false} x={p.x} y={p.y} radius={3.5 * inv} fill="#fff" stroke={ACCENT} strokeWidth={inv} opacity={0.9} />
+          ))}
+
+          {/* link tool: dots on every free end; preview of the connecting piece */}
           {joinPreview && <PreviewNode obj={joinPreview} />}
-          {tool === 'join' && project.objects.map((o) => {
+          {tool === 'link' && project.objects.map((o) => {
             if ((o.type !== 'strip' && o.type !== 'line') || o.path.closed || o.locked || o.visible === false || o.path.nodes.length < 2) return null;
             return [true, false].map((atStart) => {
               const p = endPoint(o, atStart);
@@ -1246,7 +1381,7 @@ function ContextMenu({ at, onClose, onPaste, onCopy, onEdit, onEditText, onCut }
       {(() => {
         const ps = s.project!.objects.filter((o) => sel.includes(o.id) && (o.type === 'strip' || o.type === 'line') && !o.path.closed) as PathObj[];
         if (ps.length < 2 || !ps.every((o) => o.type === ps[0].type)) return null;
-        return <button onClick={run(() => { const r = mergeChain(ps); if (r) s.mergeObjects(r.merged, r.removed); })}>Połącz w jeden pas</button>;
+        return <button onClick={run(() => { const r = mergeChain(ps); if (r) s.mergeObjects(r.merged, r.removed); })}>Scal w jeden obiekt</button>;
       })()}
       {sel.length > 1 && <button onClick={run(() => s.group(sel))}>Grupuj <kbd>Ctrl G</kbd></button>}
       {s.project!.objects.some((o) => sel.includes(o.id) && o.groupId) && <button onClick={run(() => s.ungroup(sel))}>Rozgrupuj <kbd>Ctrl Shift G</kbd></button>}
@@ -1255,8 +1390,6 @@ function ContextMenu({ at, onClose, onPaste, onCopy, onEdit, onEditText, onCut }
       {sel.length > 0 && <button onClick={run(() => s.duplicateObjects(sel))}>Duplikuj <kbd>Ctrl D</kbd></button>}
       {sel.length > 0 && <button onClick={run(() => s.removeObjects(sel))}>Usuń <kbd>Del</kbd></button>}
       {sel.length > 0 && <div className="ctx-sep" />}
-      {sel.length > 0 && <button onClick={run(() => s.reorder(sel, 'top'))}>Na wierzch <kbd>Ctrl Shift ]</kbd></button>}
-      {sel.length > 0 && <button onClick={run(() => s.reorder(sel, 'bottom'))}>Na spód <kbd>Ctrl Shift [</kbd></button>}
       {sel.length > 0 && <button onClick={run(() => s.updateObjects(sel.map((id) => ({ id, patch: { locked: !locked } }))))}>{locked ? 'Odblokuj' : 'Zablokuj'} <kbd>Ctrl Shift L</kbd></button>}
       {sel.length > 0 && <button onClick={run(() => s.updateObjects(sel.map((id) => ({ id, patch: { visible: false } }))))}>Ukryj <kbd>Ctrl Shift H</kbd></button>}
       {sel.length === 0 && <button onClick={run(() => s.select(s.project!.objects.filter((o) => !o.locked).map((o) => o.id)))}>Zaznacz wszystko <kbd>Ctrl A</kbd></button>}
