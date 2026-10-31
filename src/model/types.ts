@@ -173,6 +173,7 @@ export type LineVariant =
   | 'bikeCrossing' // P-11 przejazd dla rowerzystów
   | 'hatch'        // P-21 powierzchnia wyłączona (zamknięty)
   | 'zigzag'       // P-17 linia przystankowa
+  | 'yieldTriangle' // P-15 trójkąt podporządkowania wzdłuż ścieżki (wierzchołek na początku, podstawa na końcu)
   | 'curb'         // krawężnik
   | 'grass'        // trawnik (wielokąt)
   | 'pavement'     // chodnik / plac (wielokąt)

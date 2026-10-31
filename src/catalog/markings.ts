@@ -2,6 +2,8 @@ import type { LaneMarking, LineCode, Preset } from '../model/types';
 import { LANE_MARKING_LABEL, LINE_CODES, WHITE, lineSpec } from './helpers';
 
 export const CATEGORY = 'Oznakowanie';
+/** stretchable transverse / special markings: the pattern repeats, its thickness never scales */
+const STOP_GROUP = 'Zatrzymanie, P-15, przystanek (rozciągane, wzór się powtarza)';
 
 function line(code: LineCode): Preset {
   const def = LINE_CODES.find((c) => c.code === code)!;
@@ -10,10 +12,10 @@ function line(code: LineCode): Preset {
     id: `mk-${code}`,
     name: def.name,
     category: CATEGORY,
-    group: transverse ? 'Linie zatrzymania (rysuj w poprzek pasa)' : 'Linie (kropka → kropka)',
+    group: transverse ? STOP_GROUP : 'Linie (kropka → kropka)',
     template: { kind: 'line', ...lineSpec(code), variant: 'plain', code },
     description: def.description,
-    tags: ['linia', def.short, def.spec.style],
+    tags: ['linia', def.short, def.spec.style, ...(code === 'p13' ? ['zęby rekina', 'trójkąty', 'ustąp pierwszeństwa'] : code === 'p12' ? ['stop'] : [])],
   };
 }
 
@@ -49,7 +51,12 @@ export const presets: Preset[] = [
   },
   ...(['p12', 'p13', 'p14'] as LineCode[]).map(line),
   {
-    id: 'mk-p17', name: 'P-17 linia przystankowa', category: CATEGORY, group: 'Inne',
+    id: 'mk-p15', name: 'P-15 trójkąt podporządkowania', category: CATEGORY, group: STOP_GROUP,
+    template: { kind: 'line', width: 1.0, style: 'solid', color: WHITE, variant: 'yieldTriangle' },
+    description: 'Rysuj wzdłuż osi pasa w kierunku jazdy: od wierzchołka (3,3 m przed) do podstawy. Krótki 1,0 × 3,3 m, długi 1,9 × 5,0 m', tags: ['P-15', 'trójkąt', 'ustąp pierwszeństwa', 'A-7'],
+  },
+  {
+    id: 'mk-p17', name: 'P-17 linia przystankowa', category: CATEGORY, group: STOP_GROUP,
     template: { kind: 'line', width: 1.5, style: 'solid', color: WHITE, variant: 'zigzag' },
     description: 'Zygzak 1,5 m co 2,5 m, długość 30–60 m (rysuj wzdłuż krawężnika)', tags: ['P-17', 'przystanek', 'zygzak'],
   },

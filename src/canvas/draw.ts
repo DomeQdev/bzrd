@@ -659,6 +659,37 @@ function drawLineMarkings(ctx: Ctx, obj: LineObj) {
       ctx.stroke();
       return;
     }
+    case 'yieldTriangle': {
+      // P-15: wierzchołek na początku ścieżki (do kierowcy), podstawa na końcu; szerokość podstawy = width.
+      // Obwódka wg rys. 5.2.1.1: krótki 1,0 m → boki 0,20 m, podstawa 0,50 m; długi 1,9 m → 0,30 / 0,75 m.
+      const L = flat.length;
+      const W = obj.width || 1;
+      if (L < 0.3) return;
+      const k = W < 1 ? W : 1 + Math.min(1, (W - 1) / 0.9) * 0.5;
+      const side = W < 1 ? 0.2 * W : 0.2 * (1 + (k - 1) * 1.0);
+      const base = W < 1 ? 0.5 * W : 0.5 * (1 + (k - 1) * 1.0);
+      const hw = (s: number) => (W / 2) * (s / L);
+      const sec = Math.sqrt(1 + (W / 2 / L) ** 2);
+      const at = (s: number, off: number) => { const m = sampleAt(flat, s); return { x: m.x - m.nx * off, y: m.y - m.ny * off }; };
+      const N = 24;
+      const ring = (s0: number, s1: number, half: (s: number) => number) => {
+        const left: Vec2[] = [], right: Vec2[] = [];
+        for (let i = 0; i <= N; i++) { const s = s0 + ((s1 - s0) * i) / N; left.push(at(s, -half(s))); right.push(at(s, half(s))); }
+        return [...left, ...right.reverse()];
+      };
+      ctx.fillStyle = obj.color || WHITE;
+      ctx.beginPath();
+      const outer = ring(0, L, hw);
+      ctx.moveTo(outer[0].x, outer[0].y); for (const q of outer) ctx.lineTo(q.x, q.y); ctx.closePath();
+      const inHalf = (s: number) => Math.max(0, hw(s) - side * sec);
+      const s0 = Math.min(L, (side * sec * L) / (W / 2)), s1 = L - base;
+      if (s1 > s0 + 0.1) {
+        const inner = ring(s0, s1, inHalf);
+        ctx.moveTo(inner[0].x, inner[0].y); for (const q of inner) ctx.lineTo(q.x, q.y); ctx.closePath();
+      }
+      ctx.fill('evenodd');
+      return;
+    }
     case 'hatch': {
       // P-21a inside a closed outline: obwiednia 0,24 m, liniowanie 0,24 m co 0,39 m, skos 1:3 do najdłuższego boku
       const poly = pts.map((p) => ({ x: p.x, y: p.y }));

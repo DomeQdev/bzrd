@@ -288,6 +288,7 @@ function LinePanel({ obj }: { obj: LineObj }) {
             <option value="crosswalk">P-10 przejście dla pieszych</option>
             <option value="bikeCrossing">P-11 przejazd dla rowerzystów</option>
             <option value="zigzag">P-17 linia przystankowa</option>
+            <option value="yieldTriangle">P-15 trójkąt podporządkowania</option>
             <option value="hatch">P-21 powierzchnia wyłączona</option>
             <option value="curb">krawężnik</option>
             <option value="asphalt">nawierzchnia (wielokąt)</option>
@@ -307,7 +308,17 @@ function LinePanel({ obj }: { obj: LineObj }) {
           <div className="prop"><span>{v === 'zigzag' ? 'Amplituda' : 'Szerokość'}</span><NumberInput value={obj.width} step={0.1} min={0.1} suffix="m" onChange={(w) => set({ width: w })} /></div>
         )}
         {v === 'curb' && <div className="prop"><span>Grubość</span><NumberInput value={obj.width} step={0.05} min={0.05} suffix="m" onChange={(w) => set({ width: w })} /></div>}
-        {(v === 'crosswalk' || v === 'bikeCrossing' || v === 'zigzag' || v === 'hatch' || v === 'curb') && (
+        {v === 'yieldTriangle' && (
+          <>
+            <div className="prop"><span>Podstawa</span><NumberInput value={obj.width} step={0.1} min={0.2} suffix="m" onChange={(w) => set({ width: w })} title="Szerokość podstawy; długość zmieniasz uchwytami na końcach (wierzchołek → podstawa)" /></div>
+            <div className="prop"><span>Odmiana</span><span className="row-inline">
+              {([['mini', 0.5, 1.65], ['krótki', 1.0, 3.3], ['długi', 1.9, 5.0]] as const).map(([lbl, w, l]) => (
+                <button key={lbl} className="mini" title={`${w.toString().replace('.', ',')} × ${l.toString().replace('.', ',')} m`} onClick={() => { const n = normalizeOrigin({ ...obj, width: w, path: setPathLength(obj.path, l) }); set({ width: w, x: n.x, y: n.y, path: n.path }); }}>{lbl}</button>
+              ))}
+            </span></div>
+          </>
+        )}
+        {(v === 'crosswalk' || v === 'bikeCrossing' || v === 'zigzag' || v === 'hatch' || v === 'curb' || v === 'yieldTriangle') && (
           <div className="prop"><span>Kolor</span><span className="row-inline"><input type="color" value={obj.color} onChange={(e) => set({ color: e.target.value })} /><button className="mini" onClick={() => set({ color: WHITE })}>biały</button><button className="mini" onClick={() => set({ color: YELLOW })}>żółty</button></span></div>
         )}
         {(obj.path.closed || area || v === 'crosswalk' || v === 'bikeCrossing') && (

@@ -6,7 +6,7 @@ import { useProject, type Tool } from '../store/project';
 import { ObjectNode } from './ObjectNode';
 import { useImage } from './useImage';
 import { computeCaps, drawMarkings, drawObject, drawRails, drawTramBand, hitPolygon, isTramStrip, objectBounds, roadwayPolygons, sortByRank, type Drawable } from './draw';
-import { cornerNode, cutAtNode, cutPath, ellipsePath, flatten, linePath, nearestOnPath, rectPath, setPathLength, smoothNode, splitSegment, transformPath } from './path';
+import { cornerNode, cutAtNode, cutPath, ellipsePath, flatten, linePath, nearestOnPath, rectPath, reversePath, sampleAt, setPathLength, smoothNode, splitSegment, transformPath } from './path';
 import { buildSnapTargets, canTrace, outlineSamples, pointAt, snapAngle, snapBox, snapOutline, snapPoint, traceBetween, type GuideResult, type Polyline, type SnapResult } from './snap';
 import { specWidth } from './roadGeometry';
 import { uid } from '../store/project';
@@ -69,10 +69,47 @@ function curveBetweenEdges(nodes: PathNode[], snaps: Array<SnapResult | null | u
     const h = D / 3;
     const tA = toward(a.poly, a.param, A, B);
     const tB = toward(b.poly, b.param, B, A);
+    // only when the line runs ALONG the edges (lane guidance); across a lane (stop lines, crossings) it stays straight
+    const cA = (tA.x * (B.x - A.x) + tA.y * (B.y - A.y)) / D, cB = (tB.x * (A.x - B.x) + tB.y * (A.y - B.y)) / D;
+    if (cA < 0.5 || cB < 0.5) continue;
     A.hOut = { x: A.x + tA.x * h, y: A.y + tA.y * h };
     B.hIn = { x: B.x + tB.x * h, y: B.y + tB.y * h };
   }
   return out;
+}
+
+/** Direction of travel (world unit vector) of the lane under `w`, or null (no strip / no flow). */
+function travelAt(w: Vec2, objects: BzObject[]): Vec2 | null {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.type !== 'strip' || o.visible === false || o.path.nodes.length < 2) continue;
+    const local = { x: w.x - o.x, y: w.y - o.y };
+    if (!pointInPolygon(local, hitPolygon(o))) continue;
+    const dir = o.spec.lanes[0]?.dir ?? 0;
+    if (dir === 0) continue;
+    const f = flatten(o.path, 0.5);
+    const smp = sampleAt(f, nearestOnPath(f, local).s);
+    return { x: smp.tx * dir, y: smp.ty * dir };
+  }
+  return null;
+}
+
+/**
+ * Orient markings that have a "front": P-13 teeth (drawn on the path's left) and the P-15 apex (path start) must point
+ * at the approaching driver. When the marking lies on a lane with a direction of travel, reverse the path if needed.
+ */
+function orientForTraffic(obj: BzObject, objects: BzObject[]): BzObject {
+  if (obj.type !== 'line' || obj.path.nodes.length < 2) return obj;
+  const teeth = obj.variant === 'plain' && obj.style === 'triangles';
+  const yieldT = obj.variant === 'yieldTriangle';
+  if (!teeth && !yieldT) return obj;
+  const f = flatten(obj.path, 0.25);
+  const mid = sampleAt(f, f.length / 2);
+  const travel = travelAt({ x: obj.x + mid.x, y: obj.y + mid.y }, objects);
+  if (!travel) return obj;
+  // teeth point to the path's left normal (nx, ny) → must face against travel; P-15 path must run with travel
+  const wrong = teeth ? mid.nx * travel.x + mid.ny * travel.y > 0 : mid.tx * travel.x + mid.ty * travel.y < 0;
+  return wrong ? normalizeOrigin({ ...obj, path: reversePath(obj.path) }) : obj;
 }
 
 let clipboard: BzObject[] = [];
@@ -256,7 +293,7 @@ export function Board({ onReady, onMeasure }: Props) {
     if (!preset) return;
     let path = worldPath;
     if (preset.template.kind === 'line' && preset.template.closedOnly) path = { ...path, closed: true };
-    const obj = objectFromTemplate(preset, path);
+    const obj = orientForTraffic(objectFromTemplate(preset, path), store.getState().project!.objects);
     store.getState().addObject(obj);
   }, [templateFor, store]);
 

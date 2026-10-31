@@ -107,11 +107,40 @@ function migrateV2Object(o: Raw): Raw {
   return o;
 }
 
+/**
+ * P-12, P-13, P-14, P-15 and P-17 used to be fixed-size symbols that scaled in both axes. They are now path markings
+ * (stretching repeats the pattern), so placed symbols are converted into an equivalent path in place.
+ * Symbol frame: origin = centre, travel = up (-y), drivers come from below.
+ */
+function convertMarkingSymbols(objects: Raw[]): Raw[] {
+  const W = '#f4f4f4';
+  return objects.map((o) => {
+    if (o.type !== 'symbol') return o;
+    const id = String(o.symbolId);
+    if (!['mk-p12', 'mk-p13', 'mk-p14', 'mk-p15', 'mk-p17'].includes(id)) return o;
+    const w = Number(o.width) || 1, h = Number(o.height) || 1;
+    const r = ((Number(o.rotation) || 0) * Math.PI) / 180, c = Math.cos(r), sn = Math.sin(r);
+    const toW = (x: number, y: number) => ({ x: Number(o.x) + x * c - y * sn, y: Number(o.y) + x * sn + y * c });
+    // across the lane for stop lines (P-13 drawn right→left so its teeth point at the driver), along it for P-15 / P-17
+    const [a, b] = id === 'mk-p13' ? [toW(w / 2, 0), toW(-w / 2, 0)] : id === 'mk-p15' || id === 'mk-p17' ? [toW(0, h / 2), toW(0, -h / 2)] : [toW(-w / 2, 0), toW(w / 2, 0)];
+    const color = typeof o.color === 'string' ? o.color : W;
+    const base = { id: o.id, type: 'line', x: a.x, y: a.y, rotation: 0, name: o.name, locked: o.locked, visible: o.visible, opacity: o.opacity, groupId: o.groupId, color,
+      path: { closed: false, nodes: [{ x: 0, y: 0, mode: 'corner' }, { x: b.x - a.x, y: b.y - a.y, mode: 'corner' }] } };
+    switch (id) {
+      case 'mk-p12': return { ...base, variant: 'plain', style: 'solid', width: 0.5, code: 'p12' };
+      case 'mk-p13': return { ...base, variant: 'plain', style: 'triangles', width: 0.7, code: 'p13' };
+      case 'mk-p14': return { ...base, variant: 'plain', style: 'blocks', width: 0.5, dash: [0.75, 0.25], code: 'p14' };
+      case 'mk-p15': return { ...base, variant: 'yieldTriangle', style: 'solid', width: w };
+      default: return { ...base, variant: 'zigzag', style: 'solid', width: 1.5 };
+    }
+  });
+}
+
 /** Upgrade older project files (v1: straight roads; v2: Figma-like single z-order, implicit lane markings). */
 export function migrateProject(raw: unknown): Project {
   const p = raw as Project & { version: number };
   if (!p || typeof p !== 'object' || !Array.isArray(p.objects)) throw new Error('To nie jest plik projektu BZRD');
-  if (p.version === 3) return p;
+  if (p.version === 3) return { ...p, objects: convertMarkingSymbols(p.objects as unknown as Raw[]) as unknown as Project['objects'] };
   if (p.version !== 1 && p.version !== 2) throw new Error('Nieznana wersja pliku projektu');
   let objects: Raw[] = p.objects as unknown as Raw[];
   if (p.version === 1) {
@@ -129,7 +158,7 @@ export function migrateProject(raw: unknown): Project {
       })
       .filter((o): o is Raw => !!o);
   }
-  objects = objects.map(migrateV2Object);
+  objects = convertMarkingSymbols(objects.map(migrateV2Object));
   return { ...p, version: 3, objects: objects as unknown as Project['objects'] };
 }
 

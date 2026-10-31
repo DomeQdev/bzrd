@@ -46,17 +46,10 @@ const p11 = svg(250, 200, `<g fill="${C}">${squaresRow([0, 100, 200], 0)}${squar
 const p10p11 = svg(400, 600, `<g fill="${C}">${zebra(0, 400)}` +
   `${squaresRow([25, 125, 225, 325], 420)}${squaresRow([25, 125, 225, 325], 550)}</g>`);
 
-const p12 = svg(350, 50, `<rect width="350" height="50" fill="${C}"/>`);
 
-const p13 = svg(350, 60, `<path fill="${C}" d="` +
-  [0, 75, 150, 225, 300].map((x) => `M${x} 0H${x + 50}L${x + 25} 60Z`).join('') + '"/>');
 
-const p14 = svg(350, 50, `<g fill="${C}">` +
-  [0, 75, 150, 225, 300].map((x) => `<rect x="${x}" width="50" height="50"/>`).join('') + '</g>');
 
-const p15 = svg(150, 300, `<path fill="${C}" fill-rule="evenodd" d="M0 0H150L75 300ZM26.6 20H123.4L75 213Z"/>`);
 
-const p17 = svg(100, 600, `<path d="M8 0L92 100L8 200L92 300L8 400L92 500L8 600" fill="none" stroke="${C}" stroke-width="10"/>`);
 
 const p18 = svg(250, 500, `<path d="M6 500V6H244V500" fill="none" stroke="${C}" stroke-width="12"/>`);
 
@@ -117,11 +110,6 @@ export const symbols: SymbolDef[] = [
   { id: 'mk-p10', name: 'P-10 Przejście dla pieszych (zebra 4 m)', category: 'markings', width: 4.0, height: 4.0, svg: p10, defaultColor: '#ffffff', tags: ['P-10', 'przejście', 'zebra', 'pasy', 'crosswalk'] },
   { id: 'mk-p11', name: 'P-11 Przejazd dla rowerzystów', category: 'markings', width: 2.5, height: 2.0, svg: p11, defaultColor: '#ffffff', tags: ['P-11', 'przejazd rowerowy', 'rower', 'kwadraty'] },
   { id: 'mk-p10-p11', name: 'P-10 + P-11 Przejście z przejazdem dla rowerzystów', category: 'markings', width: 4.0, height: 6.0, svg: p10p11, defaultColor: '#ffffff', tags: ['P-10', 'P-11', 'przejście', 'przejazd', 'zebra'] },
-  { id: 'mk-p12', name: 'P-12 Linia bezwzględnego zatrzymania', category: 'markings', width: 3.5, height: 0.5, svg: p12, defaultColor: '#ffffff', tags: ['P-12', 'linia zatrzymania', 'stop', 'stop bar'] },
-  { id: 'mk-p13', name: 'P-13 Linia warunkowego zatrzymania (trójkąty)', category: 'markings', width: 3.5, height: 0.6, svg: p13, defaultColor: '#ffffff', tags: ['P-13', 'trójkąty', 'ustąp pierwszeństwa', 'zęby rekina'] },
-  { id: 'mk-p14', name: 'P-14 Linia warunkowego zatrzymania (prostokąty)', category: 'markings', width: 3.5, height: 0.5, svg: p14, defaultColor: '#ffffff', tags: ['P-14', 'prostokąty', 'linia zatrzymania'] },
-  { id: 'mk-p15', name: 'P-15 Trójkąt podporządkowania', category: 'markings', width: 1.5, height: 3.0, svg: p15, defaultColor: '#ffffff', tags: ['P-15', 'trójkąt', 'ustąp pierwszeństwa'] },
-  { id: 'mk-p17', name: 'P-17 Linia przystankowa', category: 'markings', width: 1.0, height: 6.0, svg: p17, defaultColor: '#ffffff', tags: ['P-17', 'przystanek', 'zygzak', 'linia przystankowa'] },
   { id: 'mk-p18', name: 'P-18 Stanowisko postojowe (prostopadłe)', category: 'markings', width: 2.5, height: 5.0, svg: p18, defaultColor: '#ffffff', tags: ['P-18', 'parking', 'miejsce postojowe', 'prostopadłe'] },
   { id: 'mk-p18-par', name: 'P-18 Stanowisko postojowe (równoległe)', category: 'markings', width: 2.5, height: 6.0, svg: p18par, defaultColor: '#ffffff', tags: ['P-18', 'parking', 'miejsce postojowe', 'równoległe'] },
   { id: 'mk-p19', name: 'P-19 Linia wyznaczająca pas postojowy', category: 'markings', width: 0.15, height: 6.0, svg: p19, defaultColor: '#ffffff', tags: ['P-19', 'pas postojowy', 'linia'] },

@@ -48,6 +48,11 @@ z jezdnią, placem asfaltowym lub przejściem, rysują się jako przejazd tramwa
      - kolejne punkty na **dwóch różnych krawędziach** → płynny łuk styczny do obu (prowadzenie pasa przez
        skrzyżowanie P-1d / P-1e; przełącznik łuk / prosto w panelu),
      - punkt poza krawędzią → zwykły punkt;
+   - P-12, P-13 (zęby rekina), P-14, P-15 i P-17 to znaki rysowane jak linia: wydłużanie uchwytem na końcu
+     dokłada kolejne zęby / prostokąty / zygzaki, a ich wielkość się nie zmienia. P-15 rysujesz wzdłuż osi pasa,
+     długość to odległość wierzchołek → podstawa, a szerokość podstawy i odmianę (mini / krótki / długi) zmienisz
+     w panelu. Zęby P-13 i wierzchołek P-15 same obracają się w stronę nadjeżdżających kierowców, jeśli leżą na pasie
+     z kierunkiem ruchu (inaczej: „Odwróć ścieżkę”). Linia narysowana w poprzek pasa zostaje prosta;
    - przejścia P-10 / P-11 i linie zatrzymania P-12 / P-13 / P-14 rysujesz tak samo, od krawędzi do krawędzi
      w poprzek jezdni;
    - znaki „na pasie” (strzałki P-8a–i, P-9a/b, napis BUS, P-23 rower, stanowiska P-18, szrafura P-21):
@@ -77,6 +82,7 @@ z jezdnią, placem asfaltowym lub przejściem, rysują się jako przejazd tramwa
 | P-10 | zebra: pasy 0,5 m co 1,0 m, szerokość 4 m (min. 2,5 m) |
 | P-11 | dwa rzędy kwadratów 0,5 m co 1,0 m, szerokość ≥ 1,8 / 3,0 m |
 | P-12 / P-13 / P-14 | 0,5 m ciągła · trójkąty 0,5 × 0,7 m co 0,75 m · prostokąty 0,75 × 0,5 m co 1,0 m |
+| P-15 | krótki 1,0 × 3,3 m (obwódka 0,20 / podstawa 0,50 m), długi 1,9 × 5,0 m (0,30 / 0,75 m), mini 50 % |
 | P-17 | zygzak 1,5 m co 2,5 m, 0,12 m, 30–60 m |
 | P-18 | linie 0,12 m z poprzeczkami 0,6 m |
 | P-21a | obwiednia P-7b 0,24 m, liniowanie 0,24 m co 0,39 m, skos 1:3 |
