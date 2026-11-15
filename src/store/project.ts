@@ -2,7 +2,12 @@ import { create } from 'zustand';
 import type { Background, BzObject, Preset, Project } from '../model/types';
 import { DEFAULT_PX_PER_METER } from '../model/units';
 
-export type Tool = 'select' | 'hand' | 'pen' | 'polygon' | 'line' | 'rect' | 'ellipse' | 'text' | 'measure' | 'join';
+/**
+ * link = Łącznik (J): kliknij koniec pasa, potem koniec drugiego → osobny segment łączący, styczny do obu.
+ * mark = Oznakowanie (K): kropki na krawędziach pasów; dwa kliknięcia = linia (po krawędzi lub łukiem między krawędziami),
+ *        kliknięcie w pas przy wybranym znaku „na pasie” nakłada strzałki / napis / symbol.
+ */
+export type Tool = 'select' | 'hand' | 'pen' | 'polygon' | 'line' | 'rect' | 'ellipse' | 'text' | 'measure' | 'link' | 'mark';
 
 export interface Viewport {
   x: number;
@@ -29,9 +34,9 @@ export interface ProjectState {
   showGrid: boolean;
   snap: boolean;
   snapRotation: boolean;
-  /** keep existing lanes in place on the map when the cross-section is edited */
-  lockLanes: boolean;
-  toggleLockLanes: () => void;
+  /** marking tool: connect two picked points with a smooth curve tangent to their edges (false = straight) */
+  markCurve: boolean;
+  toggleMarkCurve: () => void;
   /** library item chosen for drawing (strip or marking) */
   pending: Preset | null;
   editing: EditState | null;
@@ -91,7 +96,7 @@ let gestureBase: Project | null = null;
 
 export function blankProject(name: string, widthM: number, heightM: number): Project {
   return {
-    version: 2,
+    version: 3,
     name,
     units: 'm',
     widthM,
@@ -128,8 +133,8 @@ export const useProject = create<ProjectState>((set, get) => {
     showGrid: false,
     snap: true,
     snapRotation: true,
-    lockLanes: true,
-    toggleLockLanes: () => set({ lockLanes: !get().lockLanes }),
+    markCurve: true,
+    toggleMarkCurve: () => set({ markCurve: !get().markCurve }),
     pending: null,
     editing: null,
     hoverId: null,

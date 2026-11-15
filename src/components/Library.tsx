@@ -3,7 +3,8 @@ import type { Preset, StripObj, SymbolDef } from '../model/types';
 import { CATEGORIES, PRESETS } from '../catalog';
 import { SYMBOLS, SYMBOL_CATEGORIES } from '../assets/symbols';
 import { objectFromTemplate } from '../lib/factory';
-import { drawObject, objectBounds } from '../canvas/draw';
+import { drawObject, objectBounds, type Drawable } from '../canvas/draw';
+import { uid } from '../store/project';
 import { svgDataUrl } from '../canvas/symbolImage';
 import { useProject } from '../store/project';
 import { Layers } from './Layers';
@@ -25,21 +26,32 @@ function PresetThumb({ preset }: { preset: Preset }) {
     c.width = W * dpr; c.height = H * dpr;
     const ctx = c.getContext('2d')!;
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = preset.template.kind === 'line' && !['grass', 'pavement'].includes(preset.template.variant) ? '#3a3d42' : '#d9dad6';
+    const t = preset.template;
+    ctx.fillStyle = t.kind === 'strip' || (t.kind === 'line' && ['grass', 'pavement'].includes(t.variant)) ? '#d9dad6' : '#3a3d42';
     ctx.fillRect(0, 0, W, H);
     try {
-      const t = preset.template;
-      const closed = t.kind === 'line' && t.closedOnly;
-      const path = closed
-        ? { closed: true, nodes: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 14 }, { x: 0, y: 14 }] }
-        : { closed: false, nodes: [{ x: 0, y: 0, hOut: { x: 12, y: 0 } }, { x: 30, y: 6, hIn: { x: 18, y: 6 } }] };
-      const obj = objectFromTemplate(preset, path);
+      let obj: Drawable;
+      if (t.kind === 'laneMarking') {
+        // a straight 3 m lane with that marking, flowing to the right
+        obj = { id: uid('s'), type: 'strip', x: 0, y: 0, rotation: 0, path: { closed: false, nodes: [{ x: 0, y: 0 }, { x: 24, y: 0 }] }, spec: { lanes: [{ kind: 'drive', width: 3.5, dir: 1, marking: t.marking, markCount: 1 }] } } as StripObj;
+      } else {
+        const closed = t.kind === 'line' && t.closedOnly;
+        const path = closed
+          ? { closed: true, nodes: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 14 }, { x: 0, y: 14 }] }
+          : { closed: false, nodes: [{ x: 0, y: 0, hOut: { x: 12, y: 0 } }, { x: 30, y: 6, hIn: { x: 18, y: 6 } }] };
+        obj = objectFromTemplate(preset, path) as Drawable;
+      }
       const b = objectBounds(obj);
-      const s = Math.min((W - 8) / Math.max(b.w, 1), (H - 8) / Math.max(b.h, 1));
+      const pad = t.kind === 'laneMarking' ? 2 : 8;
+      const s = Math.min((W - pad) / Math.max(b.w, 1), (H - pad) / Math.max(b.h, 1));
       ctx.translate(W / 2, H / 2);
       ctx.scale(s, s);
       ctx.translate(-(b.x + b.w / 2), -(b.y + b.h / 2));
-      if (obj.type !== 'symbol') drawObject(ctx, obj as StripObj, { noGlyphs: s < 3 });
+      if (t.kind === 'laneMarking') {
+        // zoom on the glyph itself
+        ctx.translate(b.x + b.w / 2, b.y + b.h / 2); ctx.scale(2.2, 2.2); ctx.translate(-(b.x + b.w * 0.78), -(b.y + b.h / 2));
+      }
+      drawObject(ctx, obj);
     } catch { /* ignore */ }
   }, [preset]);
   return <canvas ref={ref} style={{ width: 64, height: 40 }} />;
@@ -80,8 +92,12 @@ export function Library({ onAddSymbol }: Props) {
 
   const pick = (p: Preset) => {
     setPending(p);
+    const t = p.template;
+    if (t.kind === 'laneMarking') { setTool('mark'); return; }
+    if (t.kind === 'line' && t.closedOnly) { if (tool !== 'polygon' && tool !== 'rect' && tool !== 'ellipse') setTool('polygon'); return; }
+    if (t.kind === 'line' && p.category === 'Oznakowanie') { if (tool !== 'pen' && tool !== 'line' && tool !== 'mark') setTool('mark'); return; }
     const drawingTool = tool === 'pen' || tool === 'polygon' || tool === 'line' || tool === 'rect' || tool === 'ellipse';
-    if (!drawingTool) setTool(p.template.kind === 'line' && p.template.closedOnly ? 'polygon' : 'pen');
+    if (!drawingTool) setTool('pen');
   };
 
   return (
@@ -106,7 +122,8 @@ export function Library({ onAddSymbol }: Props) {
             </div>
           )}
           <div className="lib-list">
-            {tab !== 'Symbole' && !query && <div className="lib-hint">Kliknij element, potem narysuj go piórem (P), wielokątem (W), linią (L), prostokątem (R) lub elipsą (O).</div>}
+            {tab === 'Nawierzchnia' && !query && <div className="lib-hint">Krok 1: nawierzchnia. Kliknij element i narysuj go piórem (P), wielokątem (W), linią (L), prostokątem (R) lub elipsą (O). Pasy łącz łącznikiem (J).</div>}
+            {tab === 'Oznakowanie' && !query && <div className="lib-hint">Krok 2: oznakowanie, zawsze na wierzchu. Linie i przejścia: narzędzie Oznakowanie (K) — kropka → kropka po krawędziach pasów. Znaki „na pasie”: kliknij pas.</div>}
             {groups.map(([g, items]) => (
               <div key={g}>
                 {g && <div className="lib-group">{g}</div>}

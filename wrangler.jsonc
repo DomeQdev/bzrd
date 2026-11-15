@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // must match the Worker name connected to this repo in the Cloudflare dashboard
+  "name": "bzrd",
+  "compatibility_date": "2026-10-01",
+  // static build from `npm run build`
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  // required by `npx wrangler preview` (PR / branch previews); may stay empty
+  "previews": {}
+}

@@ -1,4 +1,4 @@
-import type { Divider, Lane, LaneKind, RoadSpec } from '../model/types';
+import type { Divider, Lane, LaneKind, LaneMarking, LineCode, LineSpec, RoadSpec } from '../model/types';
 import {
   BIKE_LANE_W,
   BIKE_PATH_W,
@@ -19,7 +19,6 @@ import {
 } from '../model/units';
 
 export type Dir = Lane['dir'];
-export type Marking = NonNullable<Lane['marking']>;
 export type LaneExtra = Partial<Pick<Lane, 'marking' | 'surface'>>;
 
 /** Surface tints */
@@ -27,8 +26,8 @@ export const RED_ASPHALT = '#b5423a'; // droga dla rowerów
 export const GRASS_TRACK = '#5b8a3c'; // torowisko zielone
 export const PAVERS = '#9a948a';      // kostka (strefa zamieszkania)
 
-/** Default length (m) for transition presets (dodanie / zakończenie pasa). */
-export const TRANSITION_LENGTH = 40;
+export const WHITE = '#f4f4f4';
+export const YELLOW = '#f2c230';
 
 // ───────────────────────── lanes ─────────────────────────
 
@@ -51,16 +50,13 @@ const DEFAULT_WIDTH: Record<LaneKind, number> = {
   shoulder: SHOULDER_W,
 };
 
-const DEFAULT_MARKING: Partial<Record<LaneKind, Marking>> = {
-  bike: 'bikeSymbols',
-  bikePath: 'bikeSymbols',
-  bus: 'busText',
-  tram: 'tramTracks',
-  parking: 'parkingBays',
-  parkingPerp: 'parkingBays',
-  parkingAngle: 'parkingBays',
-  turn: 'arrowsLeft',
-  buffer: 'hatch',
+/**
+ * V2: a lane is asphalt first — paint is added later with the marking tool. Only structural
+ * markings are implied by the kind (tram rails, P-21 hatch of a buffer strip).
+ */
+export const DEFAULT_MARKING: Partial<Record<LaneKind, LaneMarking>> = {
+  tram: 'tracks',
+  buffer: 'p21',
 };
 
 const DEFAULT_SURFACE: Partial<Record<LaneKind, string>> = {
@@ -77,74 +73,92 @@ export function lane(kind: LaneKind, dir: Dir, width?: number, extra: LaneExtra 
   return l;
 }
 
-export const drive = (dir: Dir, w?: number, extra?: LaneExtra) => lane('drive', dir, w, extra);
-/** Pas do skrętu (default: w lewo). */
-export const turn = (dir: Dir, side: 'left' | 'right' = 'left', w?: number) =>
-  lane('turn', dir, w, { marking: side === 'left' ? 'arrowsLeft' : 'arrowsRight' });
-export const bike = (dir: Dir, w?: number) => lane('bike', dir, w);
-export const bikePath = (dir: Dir, w?: number) => lane('bikePath', dir, w);
-export const bus = (dir: Dir, w?: number) => lane('bus', dir, w);
-export const tram = (dir: Dir, w?: number, extra?: LaneExtra) => lane('tram', dir, w, extra);
-export const parking = (w?: number) => lane('parking', 0, w);
-export const parkingPerp = (w?: number) => lane('parkingPerp', 0, w);
-export const parkingAngle = (w?: number) => lane('parkingAngle', 0, w);
-export const median = (w?: number) => lane('median', 0, w);
-export const green = (w?: number) => lane('green', 0, w);
-export const separator = (w?: number) => lane('separator', 0, w);
-export const buffer = (w?: number) => lane('buffer', 0, w);
-export const sidewalk = (w?: number) => lane('sidewalk', 0, w);
-export const path = (w?: number) => lane('path', 0, w);
-export const shoulder = (w?: number) => lane('shoulder', 0, w);
+export function laneMarkingOf(l: Lane): LaneMarking {
+  return l.marking ?? DEFAULT_MARKING[l.kind] ?? 'none';
+}
 
-const rep = (n: number, f: () => Lane): Lane[] => Array.from({ length: n }, f);
+// ───────────────────────── painted lines (Polish P-1 … P-14) ─────────────────────────
 
-export interface TwoWayOpts {
-  /** lanes toward +x (right side); default = nPerDir */
-  right?: number;
-  /** drive lane width; default DRIVE_W */
-  width?: number;
-  /** strip between the two directions */
-  center?: 'median' | 'green' | 'separator' | Lane;
+export interface LineCodeDef {
+  code: LineCode;
+  name: string;
+  short: string;
+  spec: Omit<LineSpec, 'color'>;
+  description: string;
 }
 
 /**
- * Two-way carriageway: `nPerDir` lanes toward -x on the LEFT, then the optional center strip,
- * then `opts.right ?? nPerDir` lanes toward +x on the right.
+ * Wymiary wg załącznika nr 2 do rozporządzenia w sprawie szczegółowych warunków technicznych
+ * dla znaków i sygnałów drogowych (Dz.U. 2019 poz. 2311) — odmiany dla dróg o V ≤ 70 km/h.
  */
-export function twoWay(nPerDir: number, opts: TwoWayOpts = {}): Lane[] {
-  const w = opts.width;
-  const c = opts.center;
-  const mid: Lane[] =
-    c === undefined ? [] : c === 'median' ? [median()] : c === 'green' ? [green()] : c === 'separator' ? [separator()] : [c];
-  return [...rep(nPerDir, () => drive(-1, w)), ...mid, ...rep(opts.right ?? nPerDir, () => drive(1, w))];
+export const LINE_CODES: LineCodeDef[] = [
+  { code: 'p1a', short: 'P-1a', name: 'P-1a linia pojedyncza przerywana – długa', spec: { style: 'dashed', width: 0.12, dash: [4, 8] }, description: 'Kreska 4 m / przerwa 8 m. Pasy ruchu między skrzyżowaniami, V > 70 km/h' },
+  { code: 'p1b', short: 'P-1b', name: 'P-1b linia pojedyncza przerywana – krótka', spec: { style: 'dashed', width: 0.12, dash: [2, 4] }, description: 'Kreska 2 m / przerwa 4 m. Pasy ruchu między skrzyżowaniami, V ≤ 70 km/h (miasto)' },
+  { code: 'p1c', short: 'P-1c', name: 'P-1c linia przerywana – wydzielająca', spec: { style: 'dashed', width: 0.24, dash: [2, 2] }, description: 'Szeroka 0,24 m, 2 m / 2 m. Pasy włączania, wyłączania, początek buspasa / pasa rowerowego' },
+  { code: 'p1d', short: 'P-1d', name: 'P-1d linia przerywana – prowadząca wąska', spec: { style: 'dashed', width: 0.12, dash: [1, 1] }, description: '1 m / 1 m. Prowadzenie pasów przez skrzyżowanie' },
+  { code: 'p1e', short: 'P-1e', name: 'P-1e linia przerywana – prowadząca szeroka', spec: { style: 'dashed', width: 0.24, dash: [1, 1] }, description: 'Szeroka 0,24 m, 1 m / 1 m. Kontynuacja P-4 / P-3a przez skrzyżowanie' },
+  { code: 'p2a', short: 'P-2a', name: 'P-2a linia pojedyncza ciągła – wąska', spec: { style: 'solid', width: 0.12 }, description: 'Zakaz zmiany pasa' },
+  { code: 'p2b', short: 'P-2b', name: 'P-2b linia pojedyncza ciągła – szeroka', spec: { style: 'solid', width: 0.24 }, description: 'Wydzielenie buspasa / pasa rowerowego' },
+  { code: 'p3a', short: 'P-3a', name: 'P-3a linia jednostronnie przekraczalna – długa', spec: { style: 'doubleDashedLeft', width: 0.12, dash: [2, 4] }, description: 'Podwójna: przerywana 2 m / 4 m + ciągła. Odstęp 0,12 m' },
+  { code: 'p3b', short: 'P-3b', name: 'P-3b linia jednostronnie przekraczalna – krótka', spec: { style: 'doubleDashedLeft', width: 0.12, dash: [1, 1] }, description: 'Podwójna: przerywana 1 m / 1 m + ciągła. Skrzyżowania, wyjazdy' },
+  { code: 'p4', short: 'P-4', name: 'P-4 linia podwójna ciągła', spec: { style: 'double', width: 0.12 }, description: 'Oś jezdni, zakaz przekraczania w obu kierunkach' },
+  { code: 'p5', short: 'P-5', name: 'P-5 linia podwójna przerywana', spec: { style: 'doubleDashed', width: 0.12, dash: [2, 4] }, description: 'Pas o zmiennym kierunku ruchu' },
+  { code: 'p6', short: 'P-6', name: 'P-6 linia ostrzegawcza', spec: { style: 'dashed', width: 0.12, dash: [4, 2] }, description: 'Kreska 4 m / przerwa 2 m, przed linią ciągłą' },
+  { code: 'p7a', short: 'P-7a', name: 'P-7a linia krawędziowa – przerywana szeroka', spec: { style: 'dashed', width: 0.24, dash: [1, 1] }, description: 'Krawędź jezdni przy poboczu / zjazdach, 0,24 m' },
+  { code: 'p7b', short: 'P-7b', name: 'P-7b linia krawędziowa – ciągła szeroka', spec: { style: 'solid', width: 0.24 }, description: 'Krawędź jezdni, obwiednia P-21, oddzielenie torowiska' },
+  { code: 'p7c', short: 'P-7c', name: 'P-7c linia krawędziowa – przerywana wąska', spec: { style: 'dashed', width: 0.12, dash: [1, 1] }, description: 'Krawędź jezdni na drogach niższych klas' },
+  { code: 'p7d', short: 'P-7d', name: 'P-7d linia krawędziowa – ciągła wąska', spec: { style: 'solid', width: 0.12 }, description: 'Krawędź jezdni na drogach niższych klas' },
+  { code: 'p12', short: 'P-12', name: 'P-12 linia bezwzględnego zatrzymania – stop', spec: { style: 'solid', width: 0.5 }, description: 'Linia 0,5 m przy znaku B-20 (rysuj w poprzek pasa)' },
+  { code: 'p13', short: 'P-13', name: 'P-13 linia warunkowego zatrzymania z trójkątów', spec: { style: 'triangles', width: 0.7 }, description: 'Trójkąty 0,5 × 0,7 m co 0,75 m, wierzchołkiem do kierowcy (A-7)' },
+  { code: 'p14', short: 'P-14', name: 'P-14 linia warunkowego zatrzymania z prostokątów', spec: { style: 'blocks', width: 0.5, dash: [0.75, 0.25] }, description: 'Prostokąty 0,75 × 0,5 m co 1 m (sygnalizacja, przejścia)' },
+  { code: 'custom', short: 'własna', name: 'Linia własna', spec: { style: 'solid', width: 0.12 }, description: 'Dowolny styl, grubość i kolor' },
+];
+
+const CODE_BY_ID = new Map(LINE_CODES.map((c) => [c.code, c]));
+export function lineCode(code: LineCode): LineCodeDef {
+  return CODE_BY_ID.get(code) ?? CODE_BY_ID.get('custom')!;
 }
 
-export function oneWay(n: number, dir: 1 | -1 = 1, w?: number): Lane[] {
-  return rep(n, () => drive(dir, w));
+/** Full line spec for a Polish code (white by default). */
+export function lineSpec(code: LineCode, color = WHITE): LineSpec {
+  return { ...lineCode(code).spec, color };
 }
 
-// ───────────────────────── dividers (Polish markings) ─────────────────────────
+/** Find the code matching a spec exactly (style, width, dash) — or 'custom'. */
+export function codeOfSpec(s: Omit<LineSpec, 'color'>): LineCode {
+  for (const c of LINE_CODES) {
+    if (c.code === 'custom') continue;
+    const d = c.spec;
+    const sameDash = (d.dash?.[0] ?? 0) === (s.dash?.[0] ?? 0) && (d.dash?.[1] ?? 0) === (s.dash?.[1] ?? 0);
+    if (d.style === s.style && Math.abs(d.width - s.width) < 1e-6 && (d.style === 'solid' || d.style === 'double' || sameDash)) return c.code;
+  }
+  return 'custom';
+}
 
-const div = (style: Divider['style']): Divider => ({ style, color: 'white' });
+export const LINE_STYLE_LABEL: Record<LineSpec['style'], string> = {
+  solid: 'ciągła',
+  dashed: 'przerywana',
+  double: 'podwójna ciągła',
+  doubleDashedLeft: 'podwójna, przerywana z lewej',
+  doubleDashedRight: 'podwójna, przerywana z prawej',
+  doubleDashed: 'podwójna przerywana',
+  triangles: 'trójkąty (P-13)',
+  blocks: 'prostokąty (P-14)',
+  none: 'brak',
+};
+
+// ───────────────────────── dividers between lanes (auto, Polish rules) ─────────────────────────
 
 export const D = {
-  /** P-1 linia pojedyncza przerywana */
-  p1: div('dashed'),
-  /** P-1c linia krótka (przy skrzyżowaniach) */
-  p1c: div('dotted'),
-  /** P-2 linia pojedyncza ciągła */
-  p2: div('solid'),
-  /** P-3 linia jednostronnie przekraczalna (przerywana po lewej) */
-  p3L: div('doubleDashedLeft'),
-  /** P-3 linia jednostronnie przekraczalna (przerywana po prawej) */
-  p3R: div('doubleDashedRight'),
-  /** P-4 linia podwójna ciągła */
-  p4: div('double'),
-  /** P-6 linia ostrzegawcza */
-  p6: div('dashedLong'),
-  /** P-7 linia krawędziowa */
-  p7: div('edge'),
-  none: div('none'),
+  p1b: lineSpec('p1b'),
+  p1c: lineSpec('p1c'),
+  p2a: lineSpec('p2a'),
+  p2b: lineSpec('p2b'),
+  p3a: lineSpec('p3a'),
+  p4: lineSpec('p4'),
+  p6: lineSpec('p6'),
+  p7b: lineSpec('p7b'),
+  none: { style: 'none', width: 0, color: WHITE } as LineSpec,
 } as const;
 
 /** Strips with their own curb / no painted line next to them. */
@@ -154,26 +168,22 @@ const PARKING_KINDS: LaneKind[] = ['parking', 'parkingPerp', 'parkingAngle'];
 const opposite = (a: Lane, b: Lane) => a.dir !== 0 && b.dir !== 0 && a.dir !== b.dir;
 const is = (l: Lane, ...kinds: LaneKind[]) => kinds.includes(l.kind);
 
-/** Default divider between lane `a` (left) and lane `b` (right), Polish rules. */
+/** Default divider between lane `a` (left) and lane `b` (right) for legacy multi-lane strips. */
 export function dividerBetween(a: Lane, b: Lane): Divider {
   if (is(a, ...NO_LINE) || is(b, ...NO_LINE)) return D.none;
-  // pobocze: linia krawędziowa P-7
-  if (is(a, 'shoulder') || is(b, 'shoulder')) return is(a, 'shoulder') && is(b, 'shoulder') ? D.none : D.p7;
-  // torowisko
+  if (is(a, 'shoulder') || is(b, 'shoulder')) return is(a, 'shoulder') && is(b, 'shoulder') ? D.none : D.p7b;
   if (is(a, 'tram') && is(b, 'tram')) return D.none;
-  if (is(a, 'tram') || is(b, 'tram')) return D.p2;
-  // pas do skrętu: P-1 do pasa w tym samym kierunku, P-4 do pasa przeciwnego
+  if (is(a, 'tram') || is(b, 'tram')) return D.p7b;
   if (is(a, 'turn') || is(b, 'turn')) {
-    if (is(a, 'turn', 'drive') && is(b, 'turn', 'drive')) return opposite(a, b) ? D.p4 : D.p1;
-    return D.p2;
+    if (is(a, 'turn', 'drive') && is(b, 'turn', 'drive')) return opposite(a, b) ? D.p4 : D.p1b;
+    return D.p2a;
   }
-  // pasy ruchu: P-1 (również między przeciwnymi kierunkami — użytkownik może zmienić na P-4)
-  if (is(a, 'drive') && is(b, 'drive')) return D.p1;
-  if (is(a, 'bus') && is(b, 'bus')) return opposite(a, b) ? D.p4 : D.p1;
-  if (is(a, 'bike') && is(b, 'bike')) return D.p1;
-  // drive/bus ↔ bike, drive ↔ bus, drive ↔ parking, bike ↔ parking ...
+  if (is(a, 'drive') && is(b, 'drive')) return D.p1b;
+  if (is(a, 'bus') && is(b, 'bus')) return opposite(a, b) ? D.p4 : D.p1b;
+  if (is(a, 'bike') && is(b, 'bike')) return D.p1b;
   if (is(a, ...PARKING_KINDS) && is(b, ...PARKING_KINDS)) return D.none;
-  return D.p2;
+  if (is(a, 'bus') || is(b, 'bus') || is(a, 'bike') || is(b, 'bike')) return D.p2b;
+  return D.p2a;
 }
 
 /** Auto dividers (length = lanes.length - 1). */
@@ -183,43 +193,51 @@ export function autoDividers(lanes: Lane[]): Divider[] {
   return out;
 }
 
-/** Index of the centerline (first divider between opposite-direction lanes), or -1. */
-export function centerIndex(lanes: Lane[]): number {
-  for (let i = 0; i < lanes.length - 1; i++) if (opposite(lanes[i], lanes[i + 1])) return i;
-  return -1;
-}
-
-/** Auto dividers with selected indices overridden. */
-export function override(lanes: Lane[], overrides: Record<number, Divider>): Divider[] {
-  const out = autoDividers(lanes);
-  for (const [k, v] of Object.entries(overrides)) out[Number(k)] = v;
-  return out;
-}
-
-/** Auto dividers with the centerline replaced (e.g. by D.p4). */
-export function withCenter(lanes: Lane[], center: Divider): Divider[] {
-  const i = centerIndex(lanes);
-  return i < 0 ? autoDividers(lanes) : override(lanes, { [i]: center });
-}
-
-/** All dividers 'none'. */
-export function blankDividers(lanes: Lane[]): Divider[] {
-  return lanes.slice(1).map(() => D.none);
-}
-
 // ───────────────────────── specs ─────────────────────────
 
 export function road(lanes: Lane[], extra: Partial<RoadSpec> = {}): RoadSpec {
   return { lanes, ...extra };
 }
 
-export function transition(
-  lanes: Lane[],
-  lanesEnd: Lane[],
-  anchor: RoadSpec['anchor'] = 'center',
-  extra: Partial<RoadSpec> = {},
-): RoadSpec {
-  return { lanes, lanesEnd, anchor, ...extra };
-}
+// ───────────────────────── labels ─────────────────────────
 
-/** Build a legs record (intersections / roundabouts), omitting undefined legs. */
+export const LANE_KIND_LABEL: Record<LaneKind, string> = {
+  drive: 'Pas ruchu',
+  turn: 'Pas do skrętu',
+  bike: 'Pas ruchu dla rowerów',
+  bikePath: 'Droga dla rowerów',
+  bus: 'Buspas',
+  parking: 'Parkowanie równoległe',
+  parkingPerp: 'Parkowanie prostopadłe',
+  parkingAngle: 'Parkowanie skośne',
+  tram: 'Torowisko',
+  median: 'Pas dzielący',
+  green: 'Zieleń',
+  buffer: 'Pow. wyłączona (P-21)',
+  separator: 'Separator',
+  sidewalk: 'Chodnik',
+  path: 'Ciąg pieszo-rowerowy',
+  shoulder: 'Pobocze',
+};
+
+export const LANE_MARKING_LABEL: Record<LaneMarking, string> = {
+  none: 'brak',
+  p8a: 'P-8a na wprost',
+  p8b: 'P-8b w lewo',
+  p8c: 'P-8c do zawracania',
+  p8d: 'P-8d w prawo',
+  p8e: 'P-8e na wprost lub w lewo',
+  p8f: 'P-8f na wprost lub w prawo',
+  p8g: 'P-8g w lewo lub w prawo',
+  p8h: 'P-8h na wprost, w lewo lub w prawo',
+  p8i: 'P-8i na wprost i do zawracania',
+  p9a: 'P-9a naprowadzająca w lewo',
+  p9b: 'P-9b naprowadzająca w prawo',
+  p22: 'P-22 napis BUS',
+  p23: 'P-23 rower',
+  p18: 'P-18 stanowiska postojowe',
+  p21: 'P-21 powierzchnia wyłączona',
+  tracks: 'tory tramwajowe',
+};
+
+export const LANE_MARKINGS: LaneMarking[] = ['none', 'p8a', 'p8b', 'p8c', 'p8d', 'p8e', 'p8f', 'p8g', 'p8h', 'p8i', 'p9a', 'p9b', 'p22', 'p23', 'p18', 'p21', 'tracks'];

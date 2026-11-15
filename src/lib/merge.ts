@@ -5,7 +5,7 @@
  *  - connect with a cubic bezier tangent to both ends (or concatenate if the ends already meet in line),
  *  - the result keeps A's id, name and properties.
  */
-import type { Lane, LineObj, PathData, PathNode, StripObj, Vec2 } from '../model/types';
+import type { EndRef, Lane, LineObj, PathData, PathNode, StripObj, Vec2 } from '../model/types';
 import { flatten, reversePath, setPathLength, transformPath } from '../canvas/path';
 import { specWidth } from '../canvas/roadGeometry';
 import { normalizeOrigin } from './factory';
@@ -14,7 +14,7 @@ import { offsetPolyline } from '../canvas/path';
 import { uid } from '../store/project';
 
 export type PathObj = StripObj | LineObj;
-export interface EndRef { id: string; atStart: boolean }
+export type { EndRef };
 
 function worldPath(o: PathObj): PathData {
   const r = (o.rotation * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
@@ -212,5 +212,69 @@ export function taperInto(a0: StripObj, aAtStart: boolean, b: StripObj, at: Vec2
       edgeLeft: a.spec.edgeLeft, edgeRight: a.spec.edgeRight,
     },
   };
+  return normalizeOrigin(piece);
+}
+
+// ───────────────────────── łącznik: osobny segment między dwoma końcami ─────────────────────────
+
+/** Outward unit tangent and world point of an end. */
+function endOut(o: PathObj, atStart: boolean): { pt: Vec2; t: Vec2 } {
+  const p = worldPath(o);
+  const f = flatten(p, 0.25);
+  const smp = atStart ? f.pts[0] : f.pts[f.pts.length - 1];
+  const t = atStart ? { x: -smp.tx, y: -smp.ty } : { x: smp.tx, y: smp.ty };
+  return { pt: { x: smp.x, y: smp.y }, t };
+}
+
+/** Does the lane flow OUT of this end? (1 = out, -1 = in, 0 = no flow) */
+function flowOut(o: StripObj, atStart: boolean): 1 | -1 | 0 {
+  const d = o.spec.lanes[0]?.dir ?? 0;
+  if (d === 0) return 0;
+  return (atStart ? -d : d) as 1 | -1;
+}
+
+/** Lane as seen from this end, oriented so that +dir = away from the end. */
+function laneFromEnd(o: StripObj, atStart: boolean): Lane {
+  const l = o.spec.lanes.length === 1 ? o.spec.lanes[0] : { ...o.spec.lanes[0], width: specWidth(o.spec.lanes) };
+  return { ...l, dir: flowOut(o, atStart) };
+}
+
+/**
+ * V2 join: a NEW piece ("łącznik") from A's end to B's end, tangent to both, that leaves A and B untouched.
+ * Strips: same kind / surface as A; when B is a different width (or kind) the piece tapers smoothly to B.
+ * Lines: same style as A. Returns null when the ends coincide and already run in line (nothing to add).
+ */
+export function linkBetween(a: PathObj, aAtStart: boolean, b: PathObj, bAtStart: boolean): PathObj | null {
+  if (a.type !== b.type || a.path.nodes.length < 2 || b.path.nodes.length < 2) return null;
+  const A = endOut(a, aAtStart), B = endOut(b, bAtStart);
+  const D = Math.hypot(B.pt.x - A.pt.x, B.pt.y - A.pt.y);
+  if (D < 0.05) return null;
+  // handle length: D/3 for a straight-ish link, longer when the ends face each other at a sharp angle (U-turn)
+  const cosTurn = -(A.t.x * B.t.x + A.t.y * B.t.y); // 1 = ends point at each other along one line
+  const turn = Math.acos(Math.max(-1, Math.min(1, cosTurn)));
+  const h = Math.max(0.5, D * (1 / 3 + (0.4 * turn) / Math.PI));
+  const path: PathData = {
+    closed: false,
+    nodes: [
+      { x: A.pt.x, y: A.pt.y, hOut: { x: A.pt.x + A.t.x * h, y: A.pt.y + A.t.y * h }, mode: 'smooth' },
+      { x: B.pt.x, y: B.pt.y, hIn: { x: B.pt.x + B.t.x * h, y: B.pt.y + B.t.y * h }, mode: 'smooth' },
+    ],
+  };
+  const link = { a: { id: a.id, atStart: aAtStart }, b: { id: b.id, atStart: bAtStart } };
+  if (a.type === 'strip' && b.type === 'strip') {
+    const la = laneFromEnd(a, aAtStart);
+    const lbRaw = laneFromEnd(b, bAtStart);
+    // B's flow seen from B's end is "away from B" = against the link direction
+    const lb: Lane = { ...lbRaw, dir: (lbRaw.dir * -1) as Lane['dir'] };
+    const same = Math.abs(la.width - lb.width) < 1e-6 && la.kind === lb.kind;
+    const lanes: Lane[] = [{ ...la, dir: la.dir !== 0 ? la.dir : lb.dir, marking: undefined }];
+    const piece: StripObj = {
+      id: uid('s'), type: 'strip', x: 0, y: 0, rotation: 0, name: 'Łącznik', path, link,
+      spec: same ? { lanes } : { lanes, lanesEnd: [{ ...lanes[0], kind: lb.kind, width: lb.width, surface: lb.surface }], anchor: 'center' },
+    };
+    return normalizeOrigin(piece);
+  }
+  const la = a as LineObj;
+  const piece: LineObj = { ...la, id: uid('l'), x: 0, y: 0, rotation: 0, name: la.name ? `${la.name} (łącznik)` : 'Łącznik', path, groupId: undefined };
   return normalizeOrigin(piece);
 }
